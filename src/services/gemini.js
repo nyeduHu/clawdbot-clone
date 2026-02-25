@@ -87,7 +87,7 @@ async function processMessage(userId, text, imageParts = []) {
 
         let result;
         try {
-          result = await handleFunctionCall(name, args);
+          result = await handleFunctionCall(name, args, userId);
         } catch (err) {
           result = { error: err.message };
           console.error(`❌ Tool error (${name}):`, err.message);

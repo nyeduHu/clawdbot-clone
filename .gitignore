@@ -5,3 +5,4 @@ credentials.json
 workspace/
 src/tools/generated/
 .DS_Store
+bot.db
