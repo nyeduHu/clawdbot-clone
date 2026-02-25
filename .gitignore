@@ -1,0 +1,7 @@
+node_modules/
+.env
+token.json
+credentials.json
+workspace/
+src/tools/generated/
+.DS_Store
