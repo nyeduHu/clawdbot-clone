@@ -1,136 +1,142 @@
-const { GoogleGenAI } = require('@google/genai');
-const { GEMINI_API_KEY, GEMINI_MODEL } = require('../config');
-const { buildGeminiTools, handleFunctionCall } = require('../tools/_registry');
+const OpenAI = require('openai');
+const { OPENAI_API_KEY, AI_MODEL } = require('../config');
+const { buildTools, handleFunctionCall } = require('../tools/_registry');
 const {
-  addToHistory,
-  getHistory,
+  addMessage,
+  getMessages,
   getSystemInstruction,
 } = require('./conversation');
 
-// Lazy initialization — only create when first used
-let ai = null;
-function getAI() {
-  if (!ai) {
-    if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not set in .env');
-    ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+// Lazy initialization
+let client = null;
+function getClient() {
+  if (!client) {
+    if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not set in .env');
+    client = new OpenAI({ apiKey: OPENAI_API_KEY });
   }
-  return ai;
+  return client;
 }
 
 // Maximum function-call loop iterations to prevent infinite loops
 const MAX_TOOL_ROUNDS = 10;
 
 /**
- * Process a user message through Gemini with full function-calling support.
+ * Process a user message through OpenAI with full function-calling support.
  *
  * @param {string} userId - Discord user ID
  * @param {string} text - User's text message
- * @param {Array} [imageParts=[]] - Gemini-compatible image parts (inlineData)
- * @returns {Promise<string>} The final text response from Gemini
+ * @param {Array} [imageParts=[]] - Image parts as { base64, mimeType }
+ * @returns {Promise<string>} The final text response
  */
 async function processMessage(userId, text, imageParts = []) {
   const systemInstruction = getSystemInstruction(userId);
-  const tools = buildGeminiTools();
+  const tools = buildTools();
 
-  // Build the user message parts
-  const userParts = [];
-  if (imageParts.length > 0) {
-    userParts.push(...imageParts);
+  // Build the user message content
+  const dateContext = `[Current date/time: ${new Date().toISOString()}]\n\n`;
+  const userContent = [];
+
+  // Add images if any (for vision-capable models)
+  for (const img of imageParts) {
+    userContent.push({
+      type: 'image_url',
+      image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
+    });
   }
 
-  // Add date context + user text
-  const dateContext = `[Current date/time: ${new Date().toISOString()}]\n\n`;
-  userParts.push({ text: dateContext + text });
+  // Add text
+  userContent.push({ type: 'text', text: dateContext + text });
 
-  // Add to conversation history
-  addToHistory(userId, 'user', userParts);
+  // Add user message to history
+  const userMessage = {
+    role: 'user',
+    content: imageParts.length > 0 ? userContent : dateContext + text,
+  };
+  addMessage(userId, userMessage);
 
-  // Build full contents from history
-  const contents = getHistory(userId);
+  // Build full messages array with system prompt
+  const messages = [
+    { role: 'system', content: systemInstruction },
+    ...getMessages(userId),
+  ];
 
   try {
-    let response = await getAI().models.generateContent({
-      model: GEMINI_MODEL,
-      contents,
-      config: {
-        systemInstruction,
-        tools,
-      },
+    let response = await getClient().chat.completions.create({
+      model: AI_MODEL,
+      messages,
+      tools: tools || undefined,
     });
+
+    let assistantMessage = response.choices[0].message;
 
     // Function calling loop
     let rounds = 0;
-    while (rounds < MAX_TOOL_ROUNDS) {
-      const candidate = response.candidates?.[0];
-      if (!candidate?.content?.parts) break;
+    while (assistantMessage.tool_calls && rounds < MAX_TOOL_ROUNDS) {
+      // Record assistant's tool call message
+      addMessage(userId, assistantMessage);
 
-      // Check for function calls
-      const functionCalls = candidate.content.parts.filter(p => p.functionCall);
-      if (functionCalls.length === 0) break;
+      // Execute all tool calls
+      for (const toolCall of assistantMessage.tool_calls) {
+        const name = toolCall.function.name;
+        let args = {};
+        try {
+          args = JSON.parse(toolCall.function.arguments || '{}');
+        } catch {}
 
-      // Record the model's function call response in history
-      addToHistory(userId, 'model', candidate.content.parts);
-
-      // Execute all function calls
-      const functionResponses = [];
-      for (const part of functionCalls) {
-        const { name, args } = part.functionCall;
         console.log(`🔧 Tool call: ${name}(${JSON.stringify(args).slice(0, 200)})`);
 
         let result;
         try {
-          result = await handleFunctionCall(name, args || {});
+          result = await handleFunctionCall(name, args);
         } catch (err) {
           result = { error: err.message };
           console.error(`❌ Tool error (${name}):`, err.message);
         }
 
         console.log(`   → Result: ${JSON.stringify(result).slice(0, 200)}`);
-        functionResponses.push({
-          functionResponse: {
-            name,
-            response: result,
-          },
+
+        // Add tool result message
+        addMessage(userId, {
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: JSON.stringify(result),
         });
       }
 
-      // Send function results back to Gemini
-      addToHistory(userId, 'user', functionResponses);
+      // Call again with updated messages
+      const updatedMessages = [
+        { role: 'system', content: systemInstruction },
+        ...getMessages(userId),
+      ];
 
-      response = await getAI().models.generateContent({
-        model: GEMINI_MODEL,
-        contents: getHistory(userId),
-        config: {
-          systemInstruction,
-          tools,
-
-        },
+      response = await getClient().chat.completions.create({
+        model: AI_MODEL,
+        messages: updatedMessages,
+        tools: tools || undefined,
       });
 
+      assistantMessage = response.choices[0].message;
       rounds++;
     }
 
-    // Extract final text response
-    const finalParts = response.candidates?.[0]?.content?.parts || [];
-    const textParts = finalParts.filter(p => p.text).map(p => p.text);
-    const finalText = textParts.join('') || '(No response generated)';
+    // Extract final text
+    const finalText = assistantMessage.content || '(No response generated)';
 
-    // Record model response in history
-    addToHistory(userId, 'model', finalParts);
+    // Record assistant response in history
+    addMessage(userId, assistantMessage);
 
     return finalText;
   } catch (err) {
-    console.error('Gemini API error:', err);
+    console.error('OpenAI API error:', err);
 
-    // Handle common errors gracefully
-    if (err.message?.includes('429') || err.message?.includes('RESOURCE_EXHAUSTED')) {
-      return '⚠️ Rate limit reached on the Gemini free tier. Please wait a moment and try again.';
+    if (err.status === 429) {
+      return '⚠️ Rate limit reached. Please wait a moment and try again.';
     }
-    if (err.message?.includes('API key')) {
-      return '⚠️ Invalid Gemini API key. Please check your `.env` file.';
+    if (err.message?.includes('API key') || err.status === 401) {
+      return '⚠️ Invalid OpenAI API key. Please check your `.env` file.';
     }
 
-    return `⚠️ An error occurred while processing your message: ${err.message}`;
+    return `⚠️ An error occurred: ${err.message}`;
   }
 }
 

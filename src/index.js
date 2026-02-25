@@ -10,8 +10,8 @@ if (!DISCORD_TOKEN) {
   process.exit(1);
 }
 
-if (!require('./config').GEMINI_API_KEY) {
-  console.error('❌ GEMINI_API_KEY is required. Get one free at https://aistudio.google.com/apikey');
+if (!require('./config').OPENAI_API_KEY) {
+  console.error('❌ OPENAI_API_KEY is required. Get one at https://platform.openai.com/api-keys');
   process.exit(1);
 }
 

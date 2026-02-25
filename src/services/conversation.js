@@ -2,49 +2,48 @@ const { PERSONAS, MAX_HISTORY } = require('../config');
 
 /**
  * Per-user conversation state.
- * @type {Map<string, { persona: string, history: Array<{ role: string, parts: Array }> }>}
+ * Stores messages in OpenAI format: { role, content, tool_calls?, tool_call_id? }
+ * @type {Map<string, { persona: string, messages: Array }>}
  */
 const conversations = new Map();
 
 /**
  * Get or create a conversation state for a user.
  * @param {string} userId
- * @returns {{ persona: string, history: Array }}
+ * @returns {{ persona: string, messages: Array }}
  */
 function getConversation(userId) {
   if (!conversations.has(userId)) {
     conversations.set(userId, {
       persona: 'default',
-      history: [],
+      messages: [],
     });
   }
   return conversations.get(userId);
 }
 
 /**
- * Add a message to the user's history.
+ * Add an OpenAI-format message to the user's history.
  * @param {string} userId
- * @param {'user' | 'model'} role
- * @param {Array} parts - Content parts (text, images, function calls, etc.)
+ * @param {object} message - OpenAI message object (role, content, tool_calls, etc.)
  */
-function addToHistory(userId, role, parts) {
+function addMessage(userId, message) {
   const conv = getConversation(userId);
-  conv.history.push({ role, parts });
+  conv.messages.push(message);
 
-  // Trim history if too long (keep recent turns)
-  if (conv.history.length > MAX_HISTORY * 2) {
-    // Keep at least the last MAX_HISTORY exchanges
-    conv.history = conv.history.slice(-MAX_HISTORY * 2);
+  // Trim history if too long (keep recent messages)
+  if (conv.messages.length > MAX_HISTORY * 2) {
+    conv.messages = conv.messages.slice(-MAX_HISTORY * 2);
   }
 }
 
 /**
- * Get the conversation history for a user.
+ * Get the conversation messages for a user.
  * @param {string} userId
- * @returns {Array<{ role: string, parts: Array }>}
+ * @returns {Array}
  */
-function getHistory(userId) {
-  return getConversation(userId).history;
+function getMessages(userId) {
+  return getConversation(userId).messages;
 }
 
 /**
@@ -53,7 +52,7 @@ function getHistory(userId) {
  */
 function clearHistory(userId) {
   const conv = getConversation(userId);
-  conv.history = [];
+  conv.messages = [];
 }
 
 /**
@@ -66,7 +65,7 @@ function setPersona(userId, personaName) {
   if (!PERSONAS[personaName]) return false;
   const conv = getConversation(userId);
   conv.persona = personaName;
-  conv.history = []; // Reset history on persona change
+  conv.messages = []; // Reset history on persona change
   return true;
 }
 
@@ -99,8 +98,8 @@ function getAvailablePersonas() {
 
 module.exports = {
   getConversation,
-  addToHistory,
-  getHistory,
+  addMessage,
+  getMessages,
   clearHistory,
   setPersona,
   getPersona,

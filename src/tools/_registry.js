@@ -84,27 +84,30 @@ function loadAllTools() {
 }
 
 /**
- * Convert the registry into Gemini's functionDeclarations format.
+ * Convert the registry into OpenAI's tools format.
  * Only includes active (non-pending) tools.
- * @returns {Array<{ functionDeclarations: Array }>}
+ * @returns {Array<{ type: 'function', function: { name, description, parameters } }> | undefined}
  */
-function buildGeminiTools() {
-  const declarations = [];
+function buildTools() {
+  const tools = [];
 
   for (const [name, tool] of registry) {
     // Skip pending tools
     if (pendingApproval.has(name)) continue;
 
-    declarations.push({
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.parameters,
+    tools.push({
+      type: 'function',
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+      },
     });
   }
 
-  if (declarations.length === 0) return undefined;
+  if (tools.length === 0) return undefined;
 
-  return [{ functionDeclarations: declarations }];
+  return tools;
 }
 
 /**
@@ -195,7 +198,7 @@ module.exports = {
   loadAllTools,
   loadTool,
   reloadTools,
-  buildGeminiTools,
+  buildTools,
   handleFunctionCall,
   approveTool,
   removeTool,

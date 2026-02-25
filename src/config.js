@@ -10,9 +10,9 @@ module.exports = {
     ? process.env.AI_CHANNEL_IDS.split(',').map(id => id.trim())
     : [],
 
-  // Gemini
-  GEMINI_API_KEY: process.env.GEMINI_API_KEY,
-  GEMINI_MODEL: 'gemini-2.5-flash',
+  // OpenAI
+  OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+  AI_MODEL: 'o3-mini',
 
   // Paths
   SANDBOX_ROOT: path.resolve(__dirname, '..', 'workspace'),

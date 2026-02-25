@@ -26,10 +26,8 @@ async function processImages(attachments) {
       }
 
       imageParts.push({
-        inlineData: {
-          data: base64,
-          mimeType: attachment.contentType,
-        },
+        base64,
+        mimeType: attachment.contentType,
       });
     } catch (err) {
       console.error(`Failed to process image ${attachment.name}:`, err.message);
