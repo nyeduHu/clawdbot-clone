@@ -55,7 +55,6 @@ async function processMessage(userId, text, imageParts = []) {
       config: {
         systemInstruction,
         tools,
-        thinkingConfig: { thinkingLevel: 'low' },
       },
     });
 
@@ -104,7 +103,7 @@ async function processMessage(userId, text, imageParts = []) {
         config: {
           systemInstruction,
           tools,
-          thinkingConfig: { thinkingLevel: 'low' },
+
         },
       });
 

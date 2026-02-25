@@ -34,7 +34,7 @@ async function getAuthClient() {
     return null;
   }
 
-  const redirectUri = redirect_uris?.[0] || 'http://localhost:3000/oauth2callback';
+  const redirectUri = redirect_uris?.[0] || 'http://localhost';
   const oauth2Client = new google.auth.OAuth2(client_id, client_secret, redirectUri);
 
   // Try loading stored token
@@ -75,7 +75,7 @@ async function authorize() {
 
   const credentials = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf-8'));
   const { client_id, client_secret } = credentials.installed || credentials.web || {};
-  const redirectUri = 'http://localhost:3000/oauth2callback';
+  const redirectUri = 'http://localhost:3000';
 
   const oauth2Client = new google.auth.OAuth2(client_id, client_secret, redirectUri);
 
@@ -83,6 +83,7 @@ async function authorize() {
     access_type: 'offline',
     scope: SCOPES,
     prompt: 'consent', // force refresh token
+    redirect_uri: redirectUri,
   });
 
   console.log('\n📋 Open this URL in your browser to authorize:\n');
