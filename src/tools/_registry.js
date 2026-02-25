@@ -27,18 +27,22 @@ function loadTool(filePath, generated = false) {
     // Validate tool interface
     if (!tool.name || typeof tool.name !== 'string') {
       console.warn(`⚠️  Tool ${basename}: missing or invalid 'name'`);
+      if (generated) registerFailedTool(basename, filePath, 'Missing or invalid name');
       return;
     }
     if (!tool.description || typeof tool.description !== 'string') {
       console.warn(`⚠️  Tool ${basename}: missing or invalid 'description'`);
+      if (generated) registerFailedTool(tool.name || basename, filePath, 'Missing or invalid description');
       return;
     }
     if (!tool.parameters || typeof tool.parameters !== 'object') {
       console.warn(`⚠️  Tool ${basename}: missing or invalid 'parameters'`);
+      if (generated) registerFailedTool(tool.name || basename, filePath, 'Missing or invalid parameters');
       return;
     }
     if (typeof tool.execute !== 'function') {
       console.warn(`⚠️  Tool ${basename}: missing or invalid 'execute' function`);
+      if (generated) registerFailedTool(tool.name || basename, filePath, 'Missing or invalid execute function');
       return;
     }
 
@@ -53,7 +57,41 @@ function loadTool(filePath, generated = false) {
     console.log(`🔧 Tool registered: ${tool.name}${generated ? ' (generated)' : ''}`);
   } catch (err) {
     console.error(`❌ Failed to load tool ${basename}:`, err.message);
+    // For generated tools, register a stub so they can still be approved/removed
+    if (generated) {
+      registerFailedTool(basename, filePath, err.message);
+    }
   }
+}
+
+/**
+ * Register a generated tool that failed to load, so it can be approved/removed.
+ * Tries to extract name and description from the file source.
+ */
+function registerFailedTool(fallbackName, filePath, errorMsg) {
+  let name = fallbackName;
+  let description = `(Failed to load: ${errorMsg})`;
+
+  // Try to extract name/description from the source file
+  try {
+    const source = fs.readFileSync(filePath, 'utf-8');
+    const nameMatch = source.match(/name:\s*['"]([^'"]+)['"]/);
+    const descMatch = source.match(/description:\s*['"]([^'"]+)['"]/);
+    if (nameMatch) name = nameMatch[1];
+    if (descMatch) description = descMatch[1] + ` [LOAD ERROR: ${errorMsg}]`;
+  } catch {}
+
+  pendingApproval.add(name);
+  registry.set(name, {
+    name,
+    description,
+    parameters: { type: 'object', properties: {} },
+    execute: async () => ({ error: `Tool "${name}" failed to load: ${errorMsg}` }),
+    _filePath: filePath,
+    _generated: true,
+    _loadError: errorMsg,
+  });
+  console.log(`🔒 Generated tool "${name}" registered as PENDING (has load error)`);
 }
 
 /**
@@ -129,15 +167,34 @@ async function handleFunctionCall(name, args) {
 
 /**
  * Approve a generated tool (makes it active).
+ * If the tool had a load error, tries to reload it.
  * @param {string} name
- * @returns {boolean} success
+ * @returns {{ success: boolean, error?: string }}
  */
 function approveTool(name) {
   const tool = registry.get(name);
-  if (!tool || !tool._generated) return false;
+  if (!tool || !tool._generated) return { success: false, error: 'Tool not found or not a generated tool.' };
+
+  const filePath = tool._filePath;
+
+  // If tool had a load error, try reloading it
+  if (tool._loadError) {
+    try {
+      delete require.cache[require.resolve(filePath)];
+      const reloaded = require(filePath);
+
+      if (typeof reloaded.execute !== 'function') {
+        return { success: false, error: `Tool still has errors: missing execute function.` };
+      }
+
+      // Re-register with the working module
+      registry.set(name, { ...reloaded, _filePath: filePath, _generated: true });
+    } catch (err) {
+      return { success: false, error: `Tool still has load errors: ${err.message}` };
+    }
+  }
 
   // Write _approved flag into the file
-  const filePath = tool._filePath;
   let content = fs.readFileSync(filePath, 'utf-8');
   if (!content.includes('_approved')) {
     content = content.replace(
@@ -149,7 +206,7 @@ function approveTool(name) {
 
   pendingApproval.delete(name);
   console.log(`✅ Tool "${name}" approved and active.`);
-  return true;
+  return { success: true };
 }
 
 /**

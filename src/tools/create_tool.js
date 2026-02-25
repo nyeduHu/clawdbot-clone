@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 const { GENERATED_TOOLS_DIR } = require('../config');
 
 module.exports = {
@@ -22,7 +23,7 @@ module.exports = {
       },
       executeCode: {
         type: 'string',
-        description: 'The JavaScript code for the execute function body. Receives destructured parameters. Has access to require() for built-in Node.js modules and fetch(). Should return an object with the result. Example: \'const res = await fetch(`https://api.example.com/${city}`); const data = await res.json(); return { temperature: data.temp };\'',
+        description: 'The JavaScript code for the execute function body. The function receives a single "params" object with the parameters defined in parametersSchema. Access params like: params.city, params.query, etc. Do NOT redeclare params or destructure — just use params.xxx directly. Has access to require() for built-in Node.js modules and fetch(). Must return an object with the result. Example: \'const res = await fetch(`https://api.example.com/${params.city}`); const data = await res.json(); return { temperature: data.temp };\'',
       },
     },
     required: ['toolName', 'toolDescription', 'parametersSchema', 'executeCode'],
@@ -54,11 +55,20 @@ module.exports = {
   parameters: ${JSON.stringify(parsedParams, null, 2)},
 
   async execute(params) {
-    const { ${Object.keys(parsedParams.properties || {}).join(', ')} } = params;
     ${executeCode}
   },
 };
 `;
+
+      // Validate syntax before saving
+      try {
+        new vm.Script(fileContent, { filename: `${toolName}.js` });
+      } catch (syntaxErr) {
+        return {
+          error: `Generated code has a syntax error: ${syntaxErr.message}. Please fix the executeCode and try again.`,
+          code: fileContent,
+        };
+      }
 
       // Ensure generated tools directory exists
       if (!fs.existsSync(GENERATED_TOOLS_DIR)) {

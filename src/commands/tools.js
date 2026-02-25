@@ -33,10 +33,11 @@ module.exports = {
         }
 
         const name = interaction.options.getString('name');
-        if (approveTool(name)) {
+        const result = approveTool(name);
+        if (result.success) {
           await interaction.reply({ content: `✅ Tool **${name}** approved and active!` });
         } else {
-          await interaction.reply({ content: `❌ Tool "${name}" not found or not a generated tool.`, ephemeral: true });
+          await interaction.reply({ content: `❌ ${result.error}`, ephemeral: true });
         }
         break;
       }
