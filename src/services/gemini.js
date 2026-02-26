@@ -82,6 +82,9 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
     ...(await getMessages(userId)),
   ];
 
+  // Call validateMessages before sending to OpenAI
+  validateMessages(messages);
+
   try {
     // Ensure tool response messages exist for any assistant tool_calls (safety net)
     async function ensureToolResponses(msgs) {
@@ -275,6 +278,15 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
     }
 
     return `⚠️ An error occurred: ${err.message}`;
+  }
+}
+
+function validateMessages(messages) {
+  for (const msg of messages) {
+    if (!msg.content || typeof msg.content !== 'string') {
+      console.error(`[GEMINI] Invalid message content detected:`, msg);
+      throw new Error(`Invalid message content: expected a string, got ${typeof msg.content}`);
+    }
   }
 }
 

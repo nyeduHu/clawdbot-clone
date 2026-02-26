@@ -7,6 +7,7 @@ const {
 } = require('./database');
 const { splitMessage } = require('../utils/messageSplitter');
 const { ensureToolResponses } = require('./gemini');
+const { getMessages } = require('./conversation');
 
 /** @type {Map<number, import('node-cron').ScheduledTask>} */
 const activeJobs = new Map();
