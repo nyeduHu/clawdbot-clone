@@ -6,3 +6,5 @@ workspace/
 src/tools/generated/
 .DS_Store
 bot.db
+bot.db-shm
+bot.db-wal
