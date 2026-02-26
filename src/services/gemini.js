@@ -1,4 +1,6 @@
 const OpenAI = require('openai');
+const fs = require('fs');
+const path = require('path');
 const { OPENAI_API_KEY, AI_MODEL } = require('../config');
 const { buildTools, handleFunctionCall } = require('../tools/_registry');
 const {
@@ -19,6 +21,24 @@ function getClient() {
 
 // Maximum function-call loop iterations to prevent infinite loops
 const MAX_TOOL_ROUNDS = 10;
+// How many times to attempt inserting placeholders before removing tool_calls
+const CLEANUP_RETRIES = 2;
+
+const LOG_DIR = path.resolve(__dirname, '..', '..', 'logs');
+
+function persistMessages(name, obj) {
+  try {
+    if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const file = path.join(LOG_DIR, `${name}_${ts}.json`);
+    fs.writeFileSync(file, JSON.stringify(obj, null, 2));
+    const latest = path.join(LOG_DIR, `${name}_latest.json`);
+    fs.writeFileSync(latest, JSON.stringify(obj, null, 2));
+    console.log(`[GEMINI] persisted messages to ${file}`);
+  } catch (e) {
+    console.error('[GEMINI] failed to persist messages:', e?.message);
+  }
+}
 
 /**
  * Process a user message through OpenAI with full function-calling support.
@@ -66,20 +86,31 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
     // Ensure tool response messages exist for any assistant tool_calls (safety net)
     function ensureToolResponses(msgs) {
       try {
-        const needed = new Set();
-        const present = new Set();
-
-        for (const m of msgs) {
-          if (m.tool_calls && Array.isArray(m.tool_calls)) {
-            for (const tc of m.tool_calls) needed.add(tc.id);
-          }
-          if (m.role === 'tool' && m.tool_call_id) present.add(m.tool_call_id);
-        }
-
-        for (const id of needed) {
-          if (!present.has(id)) {
-            // Insert a placeholder tool response so the API call is well-formed
-            msgs.push({ role: 'tool', tool_call_id: id, name: 'auto', content: JSON.stringify({ error: 'Tool response missing; auto-inserted placeholder' }) });
+        // Walk messages in order. For any assistant message that contains tool_calls,
+        // ensure a corresponding tool message (with matching tool_call_id) appears
+        // after that assistant message. If missing, insert a placeholder immediately
+        // after the assistant message to preserve ordering required by the API.
+        for (let i = 0; i < msgs.length; i++) {
+          const m = msgs[i];
+          if (m && m.tool_calls && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+            for (const tc of m.tool_calls) {
+              const id = tc.id;
+              // Search for an existing tool message with this tool_call_id after position i
+              let found = false;
+              for (let j = i + 1; j < msgs.length; j++) {
+                const later = msgs[j];
+                if (later && later.role === 'tool' && later.tool_call_id === id) {
+                  found = true;
+                  break;
+                }
+              }
+              if (!found) {
+                const placeholder = { role: 'tool', tool_call_id: id, name: 'auto', content: JSON.stringify({ error: 'Tool response missing; auto-inserted placeholder' }) };
+                msgs.splice(i + 1, 0, placeholder);
+                i++; // skip over the inserted placeholder
+                console.warn(`[GEMINI] inserted placeholder tool response for tool_call_id=${id}`);
+              }
+            }
           }
         }
       } catch (e) {
@@ -87,7 +118,63 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
       }
     }
 
-    ensureToolResponses(messages);
+    function findMissingToolCalls(msgs) {
+      const missingMap = new Map();
+      for (let i = 0; i < msgs.length; i++) {
+        const m = msgs[i];
+        if (m && m.tool_calls && Array.isArray(m.tool_calls)) {
+          for (const tc of m.tool_calls) {
+            const id = tc.id;
+            let found = false;
+            for (let j = i + 1; j < msgs.length; j++) {
+              const later = msgs[j];
+              if (later && later.role === 'tool' && later.tool_call_id === id) {
+                found = true;
+                break;
+              }
+            }
+            if (!found) {
+              if (!missingMap.has(i)) missingMap.set(i, []);
+              missingMap.get(i).push(id);
+            }
+          }
+        }
+      }
+      return missingMap;
+    }
+
+    function cleanupMissingToolCalls(msgs) {
+      const missing = findMissingToolCalls(msgs);
+      if (missing.size === 0) return false;
+      for (const [idx, ids] of missing.entries()) {
+        const m = msgs[idx];
+        if (!m) continue;
+        delete m.tool_calls;
+        console.warn(`[GEMINI] removed ${ids.length} missing tool_calls from assistant message at index ${idx}`);
+      }
+      return true;
+    }
+
+    function prepareMessagesForApi(msgs) {
+      // Ensure placeholders appear immediately after assistant tool_calls
+      ensureToolResponses(msgs);
+      for (let attempt = 0; attempt <= CLEANUP_RETRIES; attempt++) {
+        const missing = findMissingToolCalls(msgs);
+        if (missing.size === 0) return msgs;
+        if (attempt < CLEANUP_RETRIES) {
+          // try to insert placeholders again (no-op if already inserted)
+          ensureToolResponses(msgs);
+        } else {
+          // final fallback: remove tool_calls from problematic assistant messages
+          cleanupMissingToolCalls(msgs);
+          persistMessages('messages_before_cleanup', msgs);
+          return msgs;
+        }
+      }
+      return msgs;
+    }
+
+    prepareMessagesForApi(messages);
 
     let response = await getClient().chat.completions.create({
       model: AI_MODEL,
@@ -138,7 +225,7 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
         ...(await getMessages(userId)),
       ];
 
-      ensureToolResponses(updatedMessages);
+      prepareMessagesForApi(updatedMessages);
 
       response = await getClient().chat.completions.create({
         model: AI_MODEL,
@@ -159,6 +246,12 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
     return finalText;
   } catch (err) {
     console.error('OpenAI API error:', err);
+    try {
+      // Persist the last messages for post-mortem analysis
+      persistMessages('openai_error', { error: err && err.message, requestID: err && err.requestID, messages });
+    } catch (e) {
+      console.error('[GEMINI] failed to persist error messages:', e?.message);
+    }
 
     if (err.status === 429) {
       return '⚠️ Rate limit reached. Please wait a moment and try again.';
