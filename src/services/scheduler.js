@@ -6,7 +6,6 @@ const {
   removeScheduledTask,
 } = require('./database');
 const { splitMessage } = require('../utils/messageSplitter');
-const { ensureToolResponses } = require('./gemini');
 const { getMessages } = require('./conversation');
 
 /** @type {Map<number, import('node-cron').ScheduledTask>} */
@@ -115,10 +114,6 @@ async function performTask(task) {
     } else {
       console.log(`[SCHEDULER]   ⚠️ Task #${task.id}: processMessage returned empty result`);
     }
-
-    // Ensure tool responses are handled
-    const msgs = await getMessagesForTask(task.id);
-    ensureToolResponses(msgs);
   } catch (err) {
     console.error(`[SCHEDULER] ❌ Scheduled task #${task.id} failed:`, err.message);
     console.error(`[SCHEDULER]   Stack:`, err.stack);

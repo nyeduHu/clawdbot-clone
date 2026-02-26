@@ -103,12 +103,21 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
                 }
               }
               if (!found) {
+                const toolName = tc.function?.name || 'unknown';
+                // Never retry run_job_now: it would re-enter the scheduler and cause infinite recursion
+                if (toolName === 'run_job_now') {
+                  const placeholder = { role: 'tool', tool_call_id: id, name: toolName, content: JSON.stringify({ skipped: true, reason: 'recursive run_job_now; placeholder to avoid re-entry' }) };
+                  msgs.splice(i + 1, 0, placeholder);
+                  console.warn(`[GEMINI] Skipping retry for recursive tool run_job_now (id=${id}). Inserting placeholder.`);
+                  i++;
+                  continue;
+                }
                 console.warn(`[GEMINI] Missing tool response for tool_call_id=${id}. Attempting to retry.`);
                 try {
-                  const toolResult = await handleFunctionCall(tc.function.name, JSON.parse(tc.function.arguments || '{}'), m.userId, m.channelId);
+                  const toolResult = await handleFunctionCall(toolName, JSON.parse(tc.function.arguments || '{}'), userId, channelId);
                   const toolMessage = {
                     role: 'tool',
-                    name: tc.function.name,
+                    name: toolName,
                     tool_call_id: id,
                     content: JSON.stringify(toolResult),
                   };
