@@ -19,10 +19,11 @@ const messageCache = new Map();
  * Persists to SQLite and keeps in-memory cache.
  * @param {string} userId
  * @param {object} message - OpenAI message object (role, content, tool_calls, etc.)
+ * @returns {Promise<void>}
  */
-function addMessage(userId, message) {
+async function addMessage(userId, message) {
   // Save to database
-  saveMessage(userId, message);
+  await saveMessage(userId, message);
 
   // Update cache
   if (!messageCache.has(userId)) {
@@ -41,12 +42,12 @@ function addMessage(userId, message) {
  * Get the conversation messages for a user.
  * Loads from DB on first access, then uses cache.
  * @param {string} userId
- * @returns {Array}
+ * @returns {Promise<Array>}
  */
-function getMessages(userId) {
+async function getMessages(userId) {
   if (!messageCache.has(userId)) {
     // Load from database (last MAX_HISTORY*2 messages)
-    const messages = loadMessages(userId, MAX_HISTORY * 2);
+    const messages = await loadMessages(userId, MAX_HISTORY * 2);
     messageCache.set(userId, messages);
   }
   return messageCache.get(userId);
@@ -56,9 +57,10 @@ function getMessages(userId) {
  * Clear conversation history for a user.
  * Clears both DB and cache.
  * @param {string} userId
+ * @returns {Promise<void>}
  */
-function clearHistory(userId) {
-  deleteMessages(userId);
+async function clearHistory(userId) {
+  await deleteMessages(userId);
   messageCache.set(userId, []);
 }
 
@@ -67,21 +69,21 @@ function clearHistory(userId) {
  * Persists to DB. Clears history on persona change.
  * @param {string} userId
  * @param {string} personaName
- * @returns {boolean} Whether the persona exists
+ * @returns {Promise<boolean>} Whether the persona exists
  */
-function setPersona(userId, personaName) {
+async function setPersona(userId, personaName) {
   if (!PERSONAS[personaName]) return false;
-  setUserPersona(userId, personaName);
-  clearHistory(userId);
+  await setUserPersona(userId, personaName);
+  await clearHistory(userId);
   return true;
 }
 
 /**
  * Get the active persona name for a user (from DB).
  * @param {string} userId
- * @returns {string}
+ * @returns {Promise<string>}
  */
-function getPersona(userId) {
+async function getPersona(userId) {
   return getUserPersona(userId);
 }
 
@@ -89,14 +91,14 @@ function getPersona(userId) {
  * Get the system instruction text for a user's active persona.
  * Includes any stored memories about the user.
  * @param {string} userId
- * @returns {string}
+ * @returns {Promise<string>}
  */
-function getSystemInstruction(userId) {
-  const personaName = getPersona(userId);
+async function getSystemInstruction(userId) {
+  const personaName = await getPersona(userId);
   let instruction = PERSONAS[personaName] || PERSONAS.default;
 
   // Inject long-term memories into the system prompt
-  const memories = getAllMemories(userId);
+  const memories = await getAllMemories(userId);
   if (memories.length > 0) {
     const memoryLines = memories.map(m => `- [${m.category}] ${m.content}`).join('\n');
     instruction += `\n\n## Known facts about this user (from long-term memory):\n${memoryLines}`;

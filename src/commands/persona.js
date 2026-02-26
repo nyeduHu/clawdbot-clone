@@ -6,7 +6,7 @@ module.exports = {
   async execute(interaction) {
     const name = interaction.options.getString('name');
 
-    if (setPersona(interaction.user.id, name)) {
+    if (await setPersona(interaction.user.id, name)) {
       await interaction.reply({
         content: `🎭 Persona switched to **${name}**! Conversation history has been reset.`,
         ephemeral: true,

@@ -32,11 +32,11 @@ module.exports = {
     switch (params.action) {
       case 'search': {
         if (!params.query) return { error: 'query is required for search.' };
-        const results = recallMemories(userId, params.query, params.category);
+        const results = await recallMemories(userId, params.query, params.category);
         return { memories: results, count: results.length };
       }
       case 'list': {
-        const all = getAllMemories(userId);
+        const all = await getAllMemories(userId);
         const filtered = params.category
           ? all.filter(m => m.category === params.category)
           : all;
@@ -44,7 +44,7 @@ module.exports = {
       }
       case 'delete': {
         if (!params.memoryId) return { error: 'memoryId is required for delete.' };
-        const ok = deleteMemory(params.memoryId, userId);
+        const ok = await deleteMemory(params.memoryId, userId);
         return ok
           ? { success: true, message: `Memory #${params.memoryId} deleted.` }
           : { error: `Memory #${params.memoryId} not found or not yours.` };

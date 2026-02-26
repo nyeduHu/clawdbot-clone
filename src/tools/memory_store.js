@@ -23,7 +23,7 @@ module.exports = {
     if (!params.content || !params.category) {
       return { error: 'Both content and category are required.' };
     }
-    const id = storeMemory(userId, params.content, params.category);
+    const id = await storeMemory(userId, params.content, params.category);
     return {
       success: true,
       memoryId: id,

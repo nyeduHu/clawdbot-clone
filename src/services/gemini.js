@@ -29,7 +29,7 @@ const MAX_TOOL_ROUNDS = 10;
  * @returns {Promise<string>} The final text response
  */
 async function processMessage(userId, text, imageParts = []) {
-  const systemInstruction = getSystemInstruction(userId);
+  const systemInstruction = await getSystemInstruction(userId);
   const tools = buildTools();
 
   // Build the user message content
@@ -52,12 +52,12 @@ async function processMessage(userId, text, imageParts = []) {
     role: 'user',
     content: imageParts.length > 0 ? userContent : dateContext + text,
   };
-  addMessage(userId, userMessage);
+  await addMessage(userId, userMessage);
 
   // Build full messages array with system prompt
   const messages = [
     { role: 'system', content: systemInstruction },
-    ...getMessages(userId),
+    ...(await getMessages(userId)),
   ];
 
   try {
@@ -73,7 +73,7 @@ async function processMessage(userId, text, imageParts = []) {
     let rounds = 0;
     while (assistantMessage.tool_calls && rounds < MAX_TOOL_ROUNDS) {
       // Record assistant's tool call message
-      addMessage(userId, assistantMessage);
+      await addMessage(userId, assistantMessage);
 
       // Execute all tool calls
       for (const toolCall of assistantMessage.tool_calls) {
@@ -96,7 +96,7 @@ async function processMessage(userId, text, imageParts = []) {
         console.log(`   → Result: ${JSON.stringify(result).slice(0, 200)}`);
 
         // Add tool result message
-        addMessage(userId, {
+        await addMessage(userId, {
           role: 'tool',
           tool_call_id: toolCall.id,
           content: JSON.stringify(result),
@@ -106,7 +106,7 @@ async function processMessage(userId, text, imageParts = []) {
       // Call again with updated messages
       const updatedMessages = [
         { role: 'system', content: systemInstruction },
-        ...getMessages(userId),
+        ...(await getMessages(userId)),
       ];
 
       response = await getClient().chat.completions.create({
@@ -123,7 +123,7 @@ async function processMessage(userId, text, imageParts = []) {
     const finalText = assistantMessage.content || '(No response generated)';
 
     // Record assistant response in history
-    addMessage(userId, assistantMessage);
+    await addMessage(userId, assistantMessage);
 
     return finalText;
   } catch (err) {
