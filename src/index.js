@@ -45,9 +45,16 @@ client.once('ready', async () => {
   try {
     console.log('[INDEX] Initializing scheduler...');
     const { setClient, init } = require('./services/scheduler');
+    const { runStartupRepair } = require('./services/integrity');
     console.log('[INDEX] Calling setClient()...');
     setClient(client);
     console.log('[INDEX] Calling scheduler init()...');
+    // Run startup integrity repair to fix any missing tool response messages
+    try {
+      await runStartupRepair();
+    } catch (e) {
+      console.error('[INDEX] runStartupRepair failed:', e?.message);
+    }
     await init();
     console.log('[INDEX] ✅ Scheduler initialized successfully');
   } catch (err) {

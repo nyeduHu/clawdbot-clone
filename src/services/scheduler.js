@@ -80,7 +80,7 @@ async function performTask(task) {
       const { handleFunctionCall, registry } = require('../tools/_registry');
       if (registry.has('generate_voiceover_transcriptions')) {
         console.log(`[SCHEDULER] Detected tool generate_voiceover_transcriptions — calling directly`);
-        const genRes = await handleFunctionCall('generate_voiceover_transcriptions', { prompt: null }, task.user_id, task.channel_id);
+        const genRes = await handleFunctionCall('generate_voiceover_transcriptions', { prompt: null }, task.user_id, task.channel_id, true);
         console.log(`[SCHEDULER] generate_voiceover_transcriptions returned: ${JSON.stringify(genRes).slice(0,300)}`);
         if (genRes && Array.isArray(genRes.transcriptions) && genRes.transcriptions.length) {
           for (const t of genRes.transcriptions) {

@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { TOOLS_DIR, GENERATED_TOOLS_DIR } = require('../config');
+const { saveMessage } = require('../services/database');
 
 /** @type {Map<string, { name: string, description: string, parameters: object, execute: function }>} */
 const registry = new Map();
@@ -156,8 +157,8 @@ function buildTools() {
  * @param {string} [channelId] - Discord channel ID (passed to tools that need it)
  * @returns {Promise<any>} Tool result
  */
-async function handleFunctionCall(name, args, userId, channelId) {
-  console.log(`[REGISTRY] handleFunctionCall() called: name="${name}", userId=${userId}, channelId=${channelId}`);
+async function handleFunctionCall(name, args, userId, channelId, persistToolMessage = false) {
+  console.log(`[REGISTRY] handleFunctionCall() called: name="${name}", userId=${userId}, channelId=${channelId}, persist=${persistToolMessage}`);
   console.log(`[REGISTRY]   args=${JSON.stringify(args).slice(0, 300)}`);
   const tool = registry.get(name);
   if (!tool) {
@@ -171,6 +172,22 @@ async function handleFunctionCall(name, args, userId, channelId) {
   console.log(`[REGISTRY] ✅ Executing tool "${name}" with channelId=${channelId}`);
   const result = await tool.execute(args, userId, channelId);
   console.log(`[REGISTRY] Tool "${name}" returned: ${JSON.stringify(result).slice(0, 300)}`);
+
+  if (persistToolMessage && userId) {
+    try {
+      const tool_call_id = `manual_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+      await saveMessage(userId, {
+        role: 'tool',
+        name: tool.name,
+        tool_call_id,
+        content: typeof result === 'string' ? result : JSON.stringify(result),
+      });
+      console.log(`[REGISTRY] persisted tool message for ${name} (call_id=${tool_call_id}) user=${userId}`);
+    } catch (e) {
+      console.error(`[REGISTRY] failed to persist tool message for ${name}:`, e?.message);
+    }
+  }
+
   return result;
 }
 
