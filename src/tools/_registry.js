@@ -157,14 +157,21 @@ function buildTools() {
  * @returns {Promise<any>} Tool result
  */
 async function handleFunctionCall(name, args, userId, channelId) {
+  console.log(`[REGISTRY] handleFunctionCall() called: name="${name}", userId=${userId}, channelId=${channelId}`);
+  console.log(`[REGISTRY]   args=${JSON.stringify(args).slice(0, 300)}`);
   const tool = registry.get(name);
   if (!tool) {
+    console.log(`[REGISTRY] ❌ Unknown tool: "${name}". Available: [${Array.from(registry.keys()).join(', ')}]`);
     throw new Error(`Unknown tool: ${name}`);
   }
   if (pendingApproval.has(name)) {
+    console.log(`[REGISTRY] ❌ Tool "${name}" is pending approval`);
     throw new Error(`Tool "${name}" is pending approval. Use /tools approve ${name} first.`);
   }
-  return await tool.execute(args, userId, channelId);
+  console.log(`[REGISTRY] ✅ Executing tool "${name}" with channelId=${channelId}`);
+  const result = await tool.execute(args, userId, channelId);
+  console.log(`[REGISTRY] Tool "${name}" returned: ${JSON.stringify(result).slice(0, 300)}`);
+  return result;
 }
 
 /**

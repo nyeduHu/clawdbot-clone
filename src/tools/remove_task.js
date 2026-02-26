@@ -13,7 +13,10 @@ module.exports = {
   },
 
   async execute(params, userId) {
+    console.log(`[TOOL:remove_task] execute() called: userId=${userId}, task_id=${params.task_id}`);
     const { cancelTask } = require('../services/scheduler');
-    return await cancelTask(userId, params.task_id);
+    const result = await cancelTask(userId, params.task_id);
+    console.log(`[TOOL:remove_task] cancelTask returned:`, JSON.stringify(result));
+    return result;
   },
 };

@@ -19,62 +19,85 @@ let discordClient = null;
  */
 function setClient(client) {
   discordClient = client;
+  console.log(`[SCHEDULER] setClient called — client user: ${client?.user?.tag ?? 'NOT READY'}`);
 }
 
 /**
  * Start a single cron job for a task row.
  */
 function startJob(task) {
+  console.log(`[SCHEDULER] startJob called for task #${task.id}, cron="${task.cron_expression}", channel=${task.channel_id}, user=${task.user_id}`);
+  console.log(`[SCHEDULER] startJob task description: "${task.task_description}"`);
+  
   if (!cron.validate(task.cron_expression)) {
-    console.error(`❌ Invalid cron for task #${task.id}: ${task.cron_expression}`);
+    console.error(`[SCHEDULER] ❌ CRON VALIDATION FAILED for task #${task.id}: "${task.cron_expression}"`);
     return;
   }
+  console.log(`[SCHEDULER] ✅ Cron expression valid: "${task.cron_expression}"`);
 
   const job = cron.schedule(task.cron_expression, async () => {
-    console.log(`⏰ Running scheduled task #${task.id}: "${task.task_description}"`);
+    console.log(`[SCHEDULER] ⏰ CRON FIRED for task #${task.id} at ${new Date().toISOString()}`);
+    console.log(`[SCHEDULER]   Description: "${task.task_description}"`);
+    console.log(`[SCHEDULER]   Channel: ${task.channel_id}, User: ${task.user_id}`);
 
+    console.log(`[SCHEDULER]   discordClient available: ${!!discordClient}`);
     if (!discordClient) {
-      console.error(`❌ Task #${task.id}: Discord client not available`);
+      console.error(`[SCHEDULER] ❌ Task #${task.id}: Discord client is NULL — cannot send messages`);
       return;
     }
 
     try {
+      console.log(`[SCHEDULER]   Fetching channel ${task.channel_id}...`);
       const channel = await discordClient.channels.fetch(task.channel_id);
+      console.log(`[SCHEDULER]   Channel fetched: ${channel?.id ?? 'NULL'}, type=${channel?.type}, sendable=${typeof channel?.send}`);
       if (!channel || !channel.send) {
-        console.error(`❌ Task #${task.id}: Channel ${task.channel_id} not found or not text-based`);
+        console.error(`[SCHEDULER] ❌ Task #${task.id}: Channel ${task.channel_id} not found or not text-based`);
         return;
       }
 
       // Lazy-require to avoid circular dependency
       const { processMessage } = require('./gemini');
+      console.log(`[SCHEDULER]   processMessage loaded, calling with userId=${task.user_id}...`);
 
       const prompt = `[SCHEDULED TASK] Perform the following task and post the result:\n\n${task.task_description}`;
+      console.log(`[SCHEDULER]   Prompt: "${prompt.slice(0, 120)}..."`);
       const result = await processMessage(task.user_id, prompt, [], task.channel_id);
+      console.log(`[SCHEDULER]   processMessage returned ${result ? result.length : 0} chars`);
 
       if (result && result.trim()) {
         const chunks = splitMessage(result);
+        console.log(`[SCHEDULER]   Sending ${chunks.length} message chunk(s) to channel...`);
         for (const chunk of chunks) {
           await channel.send(chunk);
         }
+        console.log(`[SCHEDULER]   ✅ Task #${task.id} output sent to channel successfully`);
+      } else {
+        console.log(`[SCHEDULER]   ⚠️ Task #${task.id}: processMessage returned empty result`);
       }
     } catch (err) {
-      console.error(`❌ Scheduled task #${task.id} failed:`, err.message);
+      console.error(`[SCHEDULER] ❌ Scheduled task #${task.id} failed:`, err.message);
+      console.error(`[SCHEDULER]   Stack:`, err.stack);
     }
   });
 
   activeJobs.set(task.id, job);
-  console.log(`⏰ Task #${task.id} scheduled: "${task.cron_expression}" → "${task.task_description.slice(0, 60)}"`);
+  console.log(`[SCHEDULER] ✅ Cron job registered and ACTIVE for task #${task.id}`);
+  console.log(`[SCHEDULER]   Expression: "${task.cron_expression}"`);
+  console.log(`[SCHEDULER]   Description: "${task.task_description.slice(0, 100)}"`);
+  console.log(`[SCHEDULER]   Active jobs count: ${activeJobs.size}`);
 }
 
 /**
  * Initialise the scheduler: load all saved tasks from DB and start their cron jobs.
  */
 async function init() {
+  console.log(`[SCHEDULER] init() called — loading tasks from DB...`);
   const tasks = await getAllScheduledTasks();
+  console.log(`[SCHEDULER] Found ${tasks.length} task(s) in DB:`, JSON.stringify(tasks.map(t => ({ id: t.id, cron: t.cron_expression, desc: t.task_description?.slice(0, 50) }))));
   for (const task of tasks) {
     startJob(task);
   }
-  console.log(`⏰ Scheduler loaded ${tasks.length} task(s)`);
+  console.log(`[SCHEDULER] ✅ Scheduler init complete — ${activeJobs.size} active cron job(s)`);
 }
 
 /**
@@ -86,14 +109,27 @@ async function init() {
  * @returns {Promise<{ id: number } | { error: string }>}
  */
 async function scheduleTask(userId, channelId, cronExpression, description) {
+  console.log(`[SCHEDULER] scheduleTask() called:`);
+  console.log(`[SCHEDULER]   userId=${userId}`);
+  console.log(`[SCHEDULER]   channelId=${channelId}`);
+  console.log(`[SCHEDULER]   cronExpression="${cronExpression}"`);
+  console.log(`[SCHEDULER]   description="${description}"`);
+  
   if (!cron.validate(cronExpression)) {
+    console.log(`[SCHEDULER] ❌ Cron validation FAILED for "${cronExpression}"`);
     return { error: `Invalid cron expression: "${cronExpression}". Use standard 5-field cron (minute hour day month weekday). Examples: "0 2 * * *" = 2 AM daily, "0 9 * * 1" = 9 AM every Monday.` };
   }
+  console.log(`[SCHEDULER] ✅ Cron validation passed for "${cronExpression}"`);
 
+  console.log(`[SCHEDULER] Saving task to DB...`);
   const { id } = await addScheduledTask(userId, channelId, cronExpression, description);
+  console.log(`[SCHEDULER] ✅ Task saved to DB with id=${id}`);
+  
   startJob({ id, user_id: userId, channel_id: channelId, cron_expression: cronExpression, task_description: description });
 
-  return { id, cronExpression, description };
+  const result = { id, cronExpression, description };
+  console.log(`[SCHEDULER] scheduleTask() returning:`, JSON.stringify(result));
+  return result;
 }
 
 /**
@@ -102,7 +138,10 @@ async function scheduleTask(userId, channelId, cronExpression, description) {
  * @returns {Promise<Array>}
  */
 async function listTasks(userId) {
-  return getScheduledTasksByUser(userId);
+  console.log(`[SCHEDULER] listTasks() called for userId=${userId}`);
+  const tasks = await getScheduledTasksByUser(userId);
+  console.log(`[SCHEDULER] listTasks() found ${tasks.length} task(s):`, JSON.stringify(tasks));
+  return tasks;
 }
 
 /**
@@ -112,17 +151,23 @@ async function listTasks(userId) {
  * @returns {Promise<{ success: boolean, error?: string }>}
  */
 async function cancelTask(userId, taskId) {
+  console.log(`[SCHEDULER] cancelTask() called: userId=${userId}, taskId=${taskId}`);
   const removed = await removeScheduledTask(taskId, userId);
+  console.log(`[SCHEDULER] removeScheduledTask returned: ${removed}`);
   if (!removed) {
+    console.log(`[SCHEDULER] ❌ Task #${taskId} not found or not owned by ${userId}`);
     return { success: false, error: `Task #${taskId} not found or you don't own it.` };
   }
 
   const job = activeJobs.get(taskId);
+  console.log(`[SCHEDULER] Active job for #${taskId}: ${!!job}`);
   if (job) {
     job.stop();
     activeJobs.delete(taskId);
+    console.log(`[SCHEDULER] ✅ Cron job #${taskId} stopped and removed`);
   }
 
+  console.log(`[SCHEDULER] ✅ Task #${taskId} cancelled — active jobs remaining: ${activeJobs.size}`);
   return { success: true, message: `Task #${taskId} cancelled.` };
 }
 

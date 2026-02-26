@@ -30,6 +30,7 @@ const MAX_TOOL_ROUNDS = 10;
  * @returns {Promise<string>} The final text response
  */
 async function processMessage(userId, text, imageParts = [], channelId = null) {
+  console.log(`[GEMINI] processMessage() called: userId=${userId}, channelId=${channelId}, textLen=${text?.length}, images=${imageParts.length}`);
   const systemInstruction = await getSystemInstruction(userId);
   const tools = buildTools();
 

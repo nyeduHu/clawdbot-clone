@@ -321,8 +321,11 @@ async function getAllMemories(userId) {
  * @returns {Promise<Array>}
  */
 async function getAllScheduledTasks() {
+  console.log(`[DB] getAllScheduledTasks() called`);
   await getDb();
-  return queryAll('SELECT id, user_id, channel_id, cron_expression, task_description, created_at FROM scheduled_tasks ORDER BY id');
+  const rows = queryAll('SELECT id, user_id, channel_id, cron_expression, task_description, created_at FROM scheduled_tasks ORDER BY id');
+  console.log(`[DB] getAllScheduledTasks() returning ${rows.length} row(s)`);
+  return rows;
 }
 
 /**
@@ -330,8 +333,11 @@ async function getAllScheduledTasks() {
  * @returns {Promise<Array>}
  */
 async function getScheduledTasksByUser(userId) {
+  console.log(`[DB] getScheduledTasksByUser() called for userId=${userId}`);
   await getDb();
-  return queryAll('SELECT id, user_id, channel_id, cron_expression, task_description, created_at FROM scheduled_tasks WHERE user_id = ?', [userId]);
+  const rows = queryAll('SELECT id, user_id, channel_id, cron_expression, task_description, created_at FROM scheduled_tasks WHERE user_id = ?', [userId]);
+  console.log(`[DB] getScheduledTasksByUser() returning ${rows.length} row(s)`);
+  return rows;
 }
 
 /**
@@ -342,11 +348,16 @@ async function getScheduledTasksByUser(userId) {
  * @returns {Promise<{ id: number }>}
  */
 async function addScheduledTask(userId, channelId, cronExpression, taskDescription) {
+  console.log(`[DB] addScheduledTask() called:`);
+  console.log(`[DB]   userId=${userId}, channelId=${channelId}`);
+  console.log(`[DB]   cronExpression="${cronExpression}"`);
+  console.log(`[DB]   taskDescription="${taskDescription?.slice(0, 100)}"`);
   await getDb();
   const result = runSql(
     'INSERT INTO scheduled_tasks (user_id, channel_id, cron_expression, task_description) VALUES (?, ?, ?, ?)',
     [userId, channelId, cronExpression, taskDescription],
   );
+  console.log(`[DB] addScheduledTask() inserted with lastID=${result.lastID}`);
   return { id: result.lastID };
 }
 
@@ -356,8 +367,10 @@ async function addScheduledTask(userId, channelId, cronExpression, taskDescripti
  * @returns {Promise<boolean>}
  */
 async function removeScheduledTask(taskId, userId) {
+  console.log(`[DB] removeScheduledTask() called: taskId=${taskId}, userId=${userId}`);
   await getDb();
   const result = runSql('DELETE FROM scheduled_tasks WHERE id = ? AND user_id = ?', [taskId, userId]);
+  console.log(`[DB] removeScheduledTask() changes=${result.changes}`);
   return result.changes > 0;
 }
 

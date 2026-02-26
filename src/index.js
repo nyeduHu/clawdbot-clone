@@ -43,11 +43,15 @@ client.once('ready', async () => {
 
   // Initialize scheduler
   try {
+    console.log('[INDEX] Initializing scheduler...');
     const { setClient, init } = require('./services/scheduler');
+    console.log('[INDEX] Calling setClient()...');
     setClient(client);
+    console.log('[INDEX] Calling scheduler init()...');
     await init();
+    console.log('[INDEX] ✅ Scheduler initialized successfully');
   } catch (err) {
-    console.error('❌ Scheduler init error:', err.message);
+    console.error('[INDEX] ❌ Scheduler init error:', err.message, err.stack);
   }
 });
 
