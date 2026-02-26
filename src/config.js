@@ -12,7 +12,7 @@ module.exports = {
 
   // OpenAI
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
-  AI_MODEL: 'o3-mini',
+  AI_MODEL: 'o3',
 
   // Paths
   SANDBOX_ROOT: path.resolve(__dirname, '..', 'workspace'),
