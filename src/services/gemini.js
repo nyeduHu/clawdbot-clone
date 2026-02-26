@@ -177,9 +177,28 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
       return true;
     }
 
+    function removeRecursiveToolCalls(msgs) {
+      const recursiveNames = new Set(['run_job_now', 'run_now', 'runJobNow']);
+      let removed = 0;
+      for (const m of msgs) {
+        if (!m || !m.tool_calls || !Array.isArray(m.tool_calls)) continue;
+        const before = m.tool_calls.length;
+        m.tool_calls = m.tool_calls.filter(tc => {
+          const name = tc?.function?.name;
+          return !recursiveNames.has(name);
+        });
+        if (m.tool_calls.length === 0) delete m.tool_calls;
+        removed += before - (m.tool_calls?.length || 0);
+      }
+      if (removed > 0) console.warn(`[GEMINI] removed ${removed} recursive tool_calls from messages to avoid recursion`);
+      return removed;
+    }
+
     async function prepareMessagesForApi(msgs) {
       // Ensure placeholders appear immediately after assistant tool_calls
       await ensureToolResponses(msgs);
+      // Remove recursive tool_calls that could cause scheduler recursion or invalid tool responses
+      removeRecursiveToolCalls(msgs);
       for (let attempt = 0; attempt <= CLEANUP_RETRIES; attempt++) {
         const missing = findMissingToolCalls(msgs);
         if (missing.size === 0) return msgs;
