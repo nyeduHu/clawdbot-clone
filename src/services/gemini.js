@@ -82,23 +82,18 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
     ...(await getMessages(userId)),
   ];
 
-  // Call validateMessages before sending to OpenAI
-  validateMessages(messages);
+  // Call sanitizeMessages before validateMessages
+  sanitizeMessages(messages);
 
   try {
     // Ensure tool response messages exist for any assistant tool_calls (safety net)
     async function ensureToolResponses(msgs) {
       try {
-        // Walk messages in order. For any assistant message that contains tool_calls,
-        // ensure a corresponding tool message (with matching tool_call_id) appears
-        // after that assistant message. If missing, insert a placeholder immediately
-        // after the assistant message to preserve ordering required by the API.
         for (let i = 0; i < msgs.length; i++) {
           const m = msgs[i];
           if (m && m.tool_calls && Array.isArray(m.tool_calls) && m.tool_calls.length) {
             for (const tc of m.tool_calls) {
               const id = tc.id;
-              // Search for an existing tool message with this tool_call_id after position i
               let found = false;
               for (let j = i + 1; j < msgs.length; j++) {
                 const later = msgs[j];
@@ -108,7 +103,7 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
                 }
               }
               if (!found) {
-                console.error(`[GEMINI] Missing tool response for tool_call_id=${id}. Attempting to retry tool execution.`);
+                console.warn(`[GEMINI] Missing tool response for tool_call_id=${id}. Attempting to retry.`);
                 try {
                   const toolResult = await handleFunctionCall(tc.function.name, JSON.parse(tc.function.arguments || '{}'), m.userId, m.channelId);
                   const toolMessage = {
@@ -125,7 +120,7 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
                   msgs.splice(i + 1, 0, placeholder);
                   console.warn(`[GEMINI] Inserted placeholder tool response for tool_call_id=${id}`);
                 }
-                i++; // skip over the inserted placeholder or retried response
+                i++; // Skip over the inserted response
               }
             }
           }
@@ -278,6 +273,15 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
     }
 
     return `⚠️ An error occurred: ${err.message}`;
+  }
+}
+
+function sanitizeMessages(messages) {
+  for (const msg of messages) {
+    if (msg.role === 'assistant' && (msg.content === null || msg.content === undefined)) {
+      console.warn(`[GEMINI] Replacing null content in assistant message with placeholder.`);
+      msg.content = '(No content provided)';
+    }
   }
 }
 
