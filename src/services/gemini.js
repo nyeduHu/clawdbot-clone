@@ -97,9 +97,10 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
 
         console.log(`   → Result: ${JSON.stringify(result).slice(0, 200)}`);
 
-        // Add tool result message
+        // Add tool result message (include tool name so OpenAI accepts the follow-up)
         await addMessage(userId, {
           role: 'tool',
+          name,
           tool_call_id: toolCall.id,
           content: JSON.stringify(result),
         });

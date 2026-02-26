@@ -56,12 +56,20 @@ function getDb() {
         content TEXT,
         tool_calls TEXT,
         tool_call_id TEXT,
+        tool_name TEXT,
         created_at TEXT DEFAULT (datetime('now')),
         CONSTRAINT valid_role CHECK (role IN ('user', 'assistant', 'tool', 'system'))
       )
     `);
     db.run('CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id)');
     db.run('CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at)');
+
+    // Ensure older DBs get the new column for tool message name
+    try {
+      db.run('ALTER TABLE messages ADD COLUMN tool_name TEXT');
+    } catch (e) {
+      // ignore if column already exists or ALTER not supported
+    }
 
     db.run(`
       CREATE TABLE IF NOT EXISTS user_settings (
@@ -154,14 +162,15 @@ function runSql(sql, params = []) {
 async function saveMessage(userId, message) {
   await getDb();
   runSql(
-    `INSERT INTO messages (user_id, role, content, tool_calls, tool_call_id)
-     VALUES (?, ?, ?, ?, ?)`,
+    `INSERT INTO messages (user_id, role, content, tool_calls, tool_call_id, tool_name)
+     VALUES (?, ?, ?, ?, ?, ?)`,
     [
       userId,
       message.role,
       typeof message.content === 'string' ? message.content : JSON.stringify(message.content),
       message.tool_calls ? JSON.stringify(message.tool_calls) : null,
       message.tool_call_id || null,
+      message.name || message.tool_name || null,
     ],
   );
 }
@@ -174,7 +183,7 @@ async function saveMessage(userId, message) {
 async function loadMessages(userId, limit = 100) {
   await getDb();
   const rows = queryAll(
-    `SELECT role, content, tool_calls, tool_call_id FROM messages
+    `SELECT role, content, tool_calls, tool_call_id, tool_name FROM messages
      WHERE user_id = ?
      ORDER BY id DESC
      LIMIT ?`,
@@ -200,6 +209,9 @@ async function loadMessages(userId, limit = 100) {
     }
     if (row.tool_call_id) {
       msg.tool_call_id = row.tool_call_id;
+    }
+    if (row.tool_name) {
+      msg.name = row.tool_name;
     }
 
     return msg;
