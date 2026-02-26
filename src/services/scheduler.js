@@ -125,6 +125,23 @@ async function performTask(task) {
 }
 
 /**
+ * Retrieve messages for a specific task ID.
+ * @param {number} taskId - The ID of the task.
+ * @returns {Promise<Array>} - A promise that resolves to an array of messages.
+ */
+async function getMessagesForTask(taskId) {
+  try {
+    console.log(`[SCHEDULER] Retrieving messages for task #${taskId}`);
+    // Example implementation: Replace with actual database or storage logic
+    const messages = await getMessages(taskId); // Assuming getMessages is defined elsewhere
+    return messages;
+  } catch (error) {
+    console.error(`[SCHEDULER] Failed to retrieve messages for task #${taskId}:`, error.message);
+    throw error;
+  }
+}
+
+/**
  * Initialise the scheduler: load all saved tasks from DB and start their cron jobs.
  */
 async function init() {
@@ -226,3 +243,5 @@ module.exports.runNow = async function runNow(taskId, callerUserId) {
   await performTask(task);
   return { success: true };
 };
+
+module.exports.getMessagesForTask = getMessagesForTask;

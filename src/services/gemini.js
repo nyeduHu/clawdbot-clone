@@ -84,7 +84,7 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
 
   try {
     // Ensure tool response messages exist for any assistant tool_calls (safety net)
-    function ensureToolResponses(msgs) {
+    async function ensureToolResponses(msgs) {
       try {
         // Walk messages in order. For any assistant message that contains tool_calls,
         // ensure a corresponding tool message (with matching tool_call_id) appears
@@ -105,10 +105,24 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
                 }
               }
               if (!found) {
-                const placeholder = { role: 'tool', tool_call_id: id, name: 'auto', content: JSON.stringify({ error: 'Tool response missing; auto-inserted placeholder' }) };
-                msgs.splice(i + 1, 0, placeholder);
-                i++; // skip over the inserted placeholder
-                console.warn(`[GEMINI] inserted placeholder tool response for tool_call_id=${id}`);
+                console.error(`[GEMINI] Missing tool response for tool_call_id=${id}. Attempting to retry tool execution.`);
+                try {
+                  const toolResult = await handleFunctionCall(tc.function.name, JSON.parse(tc.function.arguments || '{}'), m.userId, m.channelId);
+                  const toolMessage = {
+                    role: 'tool',
+                    name: tc.function.name,
+                    tool_call_id: id,
+                    content: JSON.stringify(toolResult),
+                  };
+                  msgs.splice(i + 1, 0, toolMessage);
+                  console.log(`[GEMINI] Successfully retried tool execution for tool_call_id=${id}`);
+                } catch (retryError) {
+                  console.error(`[GEMINI] Retry failed for tool_call_id=${id}:`, retryError.message);
+                  const placeholder = { role: 'tool', tool_call_id: id, name: 'auto', content: JSON.stringify({ error: 'Tool response missing; auto-inserted placeholder' }) };
+                  msgs.splice(i + 1, 0, placeholder);
+                  console.warn(`[GEMINI] Inserted placeholder tool response for tool_call_id=${id}`);
+                }
+                i++; // skip over the inserted placeholder or retried response
               }
             }
           }
