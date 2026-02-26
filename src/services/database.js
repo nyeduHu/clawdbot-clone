@@ -1,109 +1,134 @@
-const sqlite3 = require('sqlite3').verbose();
+const initSqlJs = require('sql.js');
+const fs = require('fs');
 const path = require('path');
 
 const DB_PATH = path.resolve(__dirname, '..', '..', 'bot.db');
 
 let db = null;
-
-/** Promise that resolves once the schema is ready. */
 let dbReady = null;
+let saveTimer = null;
 
 /**
- * Get or create the SQLite database connection.
- * Returns a promise that resolves to the db instance once schema is set up.
- * @returns {Promise<sqlite3.Database>}
+ * Persist the in-memory database to disk.
+ */
+function saveToDisk() {
+  if (!db) return;
+  const data = db.export();
+  fs.writeFileSync(DB_PATH, Buffer.from(data));
+}
+
+/**
+ * Schedule a debounced save (coalesces rapid writes).
+ */
+function scheduleSave() {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveToDisk, 500);
+}
+
+/**
+ * Initialise sql.js, open (or create) the database, run schema migrations.
+ * @returns {Promise<void>}
  */
 function getDb() {
   if (dbReady) return dbReady;
 
-  dbReady = new Promise((resolve, reject) => {
-    db = new sqlite3.Database(DB_PATH, (err) => {
-      if (err) return reject(err);
+  dbReady = (async () => {
+    const SQL = await initSqlJs();
 
-      // Enable WAL and foreign keys
-      db.run('PRAGMA journal_mode = WAL', () => {
-        db.run('PRAGMA foreign_keys = ON', () => {
-          // Create tables
-          db.exec(`
-            -- Conversation messages (OpenAI format)
-            CREATE TABLE IF NOT EXISTS messages (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              user_id TEXT NOT NULL,
-              role TEXT NOT NULL,
-              content TEXT,
-              tool_calls TEXT,
-              tool_call_id TEXT,
-              created_at TEXT DEFAULT (datetime('now')),
-              CONSTRAINT valid_role CHECK (role IN ('user', 'assistant', 'tool', 'system'))
-            );
+    // Load existing file or start fresh
+    let buffer;
+    try {
+      buffer = fs.readFileSync(DB_PATH);
+    } catch {}
 
-            CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id);
-            CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
+    db = buffer ? new SQL.Database(buffer) : new SQL.Database();
 
-            -- Per-user persona preferences
-            CREATE TABLE IF NOT EXISTS user_settings (
-              user_id TEXT PRIMARY KEY,
-              persona TEXT DEFAULT 'default',
-              updated_at TEXT DEFAULT (datetime('now'))
-            );
+    // Pragmas
+    db.run('PRAGMA journal_mode = WAL');
+    db.run('PRAGMA foreign_keys = ON');
 
-            -- Long-term memory: key facts the bot remembers about users
-            CREATE TABLE IF NOT EXISTS memories (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              user_id TEXT NOT NULL,
-              category TEXT NOT NULL DEFAULT 'general',
-              content TEXT NOT NULL,
-              created_at TEXT DEFAULT (datetime('now')),
-              updated_at TEXT DEFAULT (datetime('now'))
-            );
+    // Schema
+    db.run(`
+      CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT,
+        tool_calls TEXT,
+        tool_call_id TEXT,
+        created_at TEXT DEFAULT (datetime('now')),
+        CONSTRAINT valid_role CHECK (role IN ('user', 'assistant', 'tool', 'system'))
+      )
+    `);
+    db.run('CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id)');
+    db.run('CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at)');
 
-            CREATE INDEX IF NOT EXISTS idx_memories_user_id ON memories(user_id);
-            CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(user_id, category);
-          `, (execErr) => {
-            if (execErr) return reject(execErr);
-            console.log('✅ Database initialized:', DB_PATH);
-            resolve(db);
-          });
-        });
-      });
-    });
-  });
+    db.run(`
+      CREATE TABLE IF NOT EXISTS user_settings (
+        user_id TEXT PRIMARY KEY,
+        persona TEXT DEFAULT 'default',
+        updated_at TEXT DEFAULT (datetime('now'))
+      )
+    `);
+
+    db.run(`
+      CREATE TABLE IF NOT EXISTS memories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT 'general',
+        content TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
+      )
+    `);
+    db.run('CREATE INDEX IF NOT EXISTS idx_memories_user_id ON memories(user_id)');
+    db.run('CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(user_id, category)');
+
+    saveToDisk();
+    console.log('✅ Database initialized:', DB_PATH);
+  })();
 
   return dbReady;
 }
 
 // ──────────────────────────────────────
-// Promise helpers
+// Helpers (all sync after init guard)
 // ──────────────────────────────────────
 
-/** Run an INSERT/UPDATE/DELETE and resolve with { lastID, changes }. */
-function dbRun(sql, params = []) {
-  return getDb().then(db => new Promise((resolve, reject) => {
-    db.run(sql, params, function (err) {
-      if (err) return reject(err);
-      resolve({ lastID: this.lastID, changes: this.changes });
-    });
-  }));
+/**
+ * Run a SELECT and return all matching rows as objects.
+ */
+function queryAll(sql, params = []) {
+  const stmt = db.prepare(sql);
+  stmt.bind(params);
+  const rows = [];
+  while (stmt.step()) {
+    rows.push(stmt.getAsObject());
+  }
+  stmt.free();
+  return rows;
 }
 
-/** Run a SELECT and resolve with all rows. */
-function dbAll(sql, params = []) {
-  return getDb().then(db => new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => {
-      if (err) return reject(err);
-      resolve(rows);
-    });
-  }));
+/**
+ * Run a SELECT and return the first row (or undefined).
+ */
+function queryGet(sql, params = []) {
+  const stmt = db.prepare(sql);
+  stmt.bind(params);
+  const row = stmt.step() ? stmt.getAsObject() : undefined;
+  stmt.free();
+  return row;
 }
 
-/** Run a SELECT and resolve with the first row (or undefined). */
-function dbGet(sql, params = []) {
-  return getDb().then(db => new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => {
-      if (err) return reject(err);
-      resolve(row);
-    });
-  }));
+/**
+ * Run an INSERT/UPDATE/DELETE, return { lastID, changes }.
+ */
+function runSql(sql, params = []) {
+  db.run(sql, params);
+  const lastID = db.exec('SELECT last_insert_rowid()')[0]?.values[0][0] ?? 0;
+  const changes = db.exec('SELECT changes()')[0]?.values[0][0] ?? 0;
+  scheduleSave();
+  return { lastID, changes };
 }
 
 // ──────────────────────────────────────
@@ -111,13 +136,13 @@ function dbGet(sql, params = []) {
 // ──────────────────────────────────────
 
 /**
- * Save a message to the database.
  * @param {string} userId
- * @param {object} message - OpenAI message object
+ * @param {object} message
  * @returns {Promise<void>}
  */
 async function saveMessage(userId, message) {
-  await dbRun(
+  await getDb();
+  runSql(
     `INSERT INTO messages (user_id, role, content, tool_calls, tool_call_id)
      VALUES (?, ?, ?, ?, ?)`,
     [
@@ -131,13 +156,13 @@ async function saveMessage(userId, message) {
 }
 
 /**
- * Load recent messages for a user.
  * @param {string} userId
- * @param {number} limit - Max messages to load
- * @returns {Promise<Array>} OpenAI-format messages
+ * @param {number} limit
+ * @returns {Promise<Array>}
  */
 async function loadMessages(userId, limit = 100) {
-  const rows = await dbAll(
+  await getDb();
+  const rows = queryAll(
     `SELECT role, content, tool_calls, tool_call_id FROM messages
      WHERE user_id = ?
      ORDER BY id DESC
@@ -145,11 +170,9 @@ async function loadMessages(userId, limit = 100) {
     [userId, limit],
   );
 
-  // Reverse to chronological order
   return rows.reverse().map(row => {
     const msg = { role: row.role };
 
-    // Parse content back
     if (row.content !== null) {
       try {
         const parsed = JSON.parse(row.content);
@@ -173,12 +196,12 @@ async function loadMessages(userId, limit = 100) {
 }
 
 /**
- * Delete all messages for a user.
  * @param {string} userId
  * @returns {Promise<void>}
  */
 async function deleteMessages(userId) {
-  await dbRun('DELETE FROM messages WHERE user_id = ?', [userId]);
+  await getDb();
+  runSql('DELETE FROM messages WHERE user_id = ?', [userId]);
 }
 
 // ──────────────────────────────────────
@@ -186,23 +209,23 @@ async function deleteMessages(userId) {
 // ──────────────────────────────────────
 
 /**
- * Get user's persona preference.
  * @param {string} userId
  * @returns {Promise<string>}
  */
 async function getUserPersona(userId) {
-  const row = await dbGet('SELECT persona FROM user_settings WHERE user_id = ?', [userId]);
+  await getDb();
+  const row = queryGet('SELECT persona FROM user_settings WHERE user_id = ?', [userId]);
   return row?.persona || 'default';
 }
 
 /**
- * Set user's persona preference.
  * @param {string} userId
  * @param {string} persona
  * @returns {Promise<void>}
  */
 async function setUserPersona(userId, persona) {
-  await dbRun(
+  await getDb();
+  runSql(
     `INSERT INTO user_settings (user_id, persona, updated_at)
      VALUES (?, ?, datetime('now'))
      ON CONFLICT(user_id) DO UPDATE SET persona = ?, updated_at = datetime('now')`,
@@ -211,18 +234,18 @@ async function setUserPersona(userId, persona) {
 }
 
 // ──────────────────────────────────────
-// Memories (long-term facts)
+// Memories
 // ──────────────────────────────────────
 
 /**
- * Store a memory/fact about a user.
  * @param {string} userId
- * @param {string} content - The fact to remember
- * @param {string} [category='general'] - Category (e.g., 'preference', 'name', 'project')
+ * @param {string} content
+ * @param {string} [category='general']
  * @returns {Promise<{ id: number }>}
  */
 async function storeMemory(userId, content, category = 'general') {
-  const result = await dbRun(
+  await getDb();
+  const result = runSql(
     'INSERT INTO memories (user_id, category, content) VALUES (?, ?, ?)',
     [userId, category, content],
   );
@@ -230,14 +253,14 @@ async function storeMemory(userId, content, category = 'general') {
 }
 
 /**
- * Search/recall memories for a user.
  * @param {string} userId
- * @param {string} [category] - Optional category filter
- * @param {string} [search] - Optional text search
+ * @param {string} [category]
+ * @param {string} [search]
  * @param {number} [limit=20]
- * @returns {Promise<Array<{ id: number, category: string, content: string, created_at: string }>>}
+ * @returns {Promise<Array>}
  */
 async function recallMemories(userId, category, search, limit = 20) {
+  await getDb();
   let query = 'SELECT id, category, content, created_at FROM memories WHERE user_id = ?';
   const params = [userId];
 
@@ -245,7 +268,6 @@ async function recallMemories(userId, category, search, limit = 20) {
     query += ' AND category = ?';
     params.push(category);
   }
-
   if (search) {
     query += ' AND content LIKE ?';
     params.push(`%${search}%`);
@@ -254,27 +276,27 @@ async function recallMemories(userId, category, search, limit = 20) {
   query += ' ORDER BY updated_at DESC LIMIT ?';
   params.push(limit);
 
-  return dbAll(query, params);
+  return queryAll(query, params);
 }
 
 /**
- * Delete a specific memory by ID.
  * @param {string} userId
  * @param {number} memoryId
  * @returns {Promise<boolean>}
  */
 async function deleteMemory(userId, memoryId) {
-  const result = await dbRun('DELETE FROM memories WHERE id = ? AND user_id = ?', [memoryId, userId]);
+  await getDb();
+  const result = runSql('DELETE FROM memories WHERE id = ? AND user_id = ?', [memoryId, userId]);
   return result.changes > 0;
 }
 
 /**
- * Get all memories for a user (for system prompt injection).
  * @param {string} userId
- * @returns {Promise<Array<{ id: number, category: string, content: string }>>}
+ * @returns {Promise<Array>}
  */
 async function getAllMemories(userId) {
-  return dbAll(
+  await getDb();
+  return queryAll(
     'SELECT id, category, content FROM memories WHERE user_id = ? ORDER BY category, created_at',
     [userId],
   );
