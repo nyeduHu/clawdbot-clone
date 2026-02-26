@@ -40,58 +40,6 @@ function persistMessages(name, obj) {
   }
 }
 
-// Ensure tool response messages exist for any assistant tool_calls (safety net)
-async function ensureToolResponses(msgs) {
-  try {
-    for (let i = 0; i < msgs.length; i++) {
-      const m = msgs[i];
-      if (m && m.tool_calls && Array.isArray(m.tool_calls) && m.tool_calls.length) {
-        for (const tc of m.tool_calls) {
-          const id = tc.id;
-          let found = false;
-          for (let j = i + 1; j < msgs.length; j++) {
-            const later = msgs[j];
-            if (later && later.role === 'tool' && later.tool_call_id === id) {
-              found = true;
-              break;
-            }
-          }
-          if (!found) {
-            console.warn(`[GEMINI] Missing tool response for tool_call_id=${id}.`);
-            // Avoid retrying tools that may trigger scheduler recursion or external state
-            const fname = tc.function?.name;
-            if (fname === 'run_job_now' || fname === 'run_now' || fname === 'runJobNow') {
-              console.warn(`[GEMINI] Skipping retry for recursive tool ${fname} (id=${id}). Inserting placeholder.`);
-              const placeholder = { role: 'tool', tool_call_id: id, name: fname || 'auto', content: JSON.stringify({ error: 'Tool response skipped to avoid recursion' }) };
-              msgs.splice(i + 1, 0, placeholder);
-            } else {
-              try {
-                const toolResult = await handleFunctionCall(fname, JSON.parse(tc.function.arguments || '{}'), m.userId, m.channelId);
-                const toolMessage = {
-                  role: 'tool',
-                  name: fname,
-                  tool_call_id: id,
-                  content: JSON.stringify(toolResult),
-                };
-                msgs.splice(i + 1, 0, toolMessage);
-                console.log(`[GEMINI] Successfully retried tool execution for tool_call_id=${id}`);
-              } catch (retryError) {
-                console.error(`[GEMINI] Retry failed for tool_call_id=${id}:`, retryError?.message);
-                const placeholder = { role: 'tool', tool_call_id: id, name: fname || 'auto', content: JSON.stringify({ error: 'Tool response missing; auto-inserted placeholder' }) };
-                msgs.splice(i + 1, 0, placeholder);
-                console.warn(`[GEMINI] Inserted placeholder tool response for tool_call_id=${id}`);
-              }
-            }
-            i++; // Skip over the inserted response
-          }
-        }
-      }
-    }
-  } catch (e) {
-    console.error('[GEMINI] ensureToolResponses failed:', e?.message);
-  }
-}
-
 /**
  * Process a user message through OpenAI with full function-calling support.
  *
@@ -138,7 +86,49 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
   sanitizeMessages(messages);
 
   try {
-    // ensureToolResponses is defined at module scope
+    // Ensure tool response messages exist for any assistant tool_calls (safety net)
+    async function ensureToolResponses(msgs) {
+      try {
+        for (let i = 0; i < msgs.length; i++) {
+          const m = msgs[i];
+          if (m && m.tool_calls && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+            for (const tc of m.tool_calls) {
+              const id = tc.id;
+              let found = false;
+              for (let j = i + 1; j < msgs.length; j++) {
+                const later = msgs[j];
+                if (later && later.role === 'tool' && later.tool_call_id === id) {
+                  found = true;
+                  break;
+                }
+              }
+              if (!found) {
+                console.warn(`[GEMINI] Missing tool response for tool_call_id=${id}. Attempting to retry.`);
+                try {
+                  const toolResult = await handleFunctionCall(tc.function.name, JSON.parse(tc.function.arguments || '{}'), m.userId, m.channelId);
+                  const toolMessage = {
+                    role: 'tool',
+                    name: tc.function.name,
+                    tool_call_id: id,
+                    content: JSON.stringify(toolResult),
+                  };
+                  msgs.splice(i + 1, 0, toolMessage);
+                  console.log(`[GEMINI] Successfully retried tool execution for tool_call_id=${id}`);
+                } catch (retryError) {
+                  console.error(`[GEMINI] Retry failed for tool_call_id=${id}:`, retryError.message);
+                  const placeholder = { role: 'tool', tool_call_id: id, name: 'auto', content: JSON.stringify({ error: 'Tool response missing; auto-inserted placeholder' }) };
+                  msgs.splice(i + 1, 0, placeholder);
+                  console.warn(`[GEMINI] Inserted placeholder tool response for tool_call_id=${id}`);
+                }
+                i++; // Skip over the inserted response
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.error('[GEMINI] ensureToolResponses failed:', e?.message);
+      }
+    }
 
     function findMissingToolCalls(msgs) {
       const missingMap = new Map();
@@ -177,34 +167,15 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
       return true;
     }
 
-    function removeRecursiveToolCalls(msgs) {
-      const recursiveNames = new Set(['run_job_now', 'run_now', 'runJobNow']);
-      let removed = 0;
-      for (const m of msgs) {
-        if (!m || !m.tool_calls || !Array.isArray(m.tool_calls)) continue;
-        const before = m.tool_calls.length;
-        m.tool_calls = m.tool_calls.filter(tc => {
-          const name = tc?.function?.name;
-          return !recursiveNames.has(name);
-        });
-        if (m.tool_calls.length === 0) delete m.tool_calls;
-        removed += before - (m.tool_calls?.length || 0);
-      }
-      if (removed > 0) console.warn(`[GEMINI] removed ${removed} recursive tool_calls from messages to avoid recursion`);
-      return removed;
-    }
-
-    async function prepareMessagesForApi(msgs) {
+    function prepareMessagesForApi(msgs) {
       // Ensure placeholders appear immediately after assistant tool_calls
-      await ensureToolResponses(msgs);
-      // Remove recursive tool_calls that could cause scheduler recursion or invalid tool responses
-      removeRecursiveToolCalls(msgs);
+      ensureToolResponses(msgs);
       for (let attempt = 0; attempt <= CLEANUP_RETRIES; attempt++) {
         const missing = findMissingToolCalls(msgs);
         if (missing.size === 0) return msgs;
         if (attempt < CLEANUP_RETRIES) {
           // try to insert placeholders again (no-op if already inserted)
-          await ensureToolResponses(msgs);
+          ensureToolResponses(msgs);
         } else {
           // final fallback: remove tool_calls from problematic assistant messages
           cleanupMissingToolCalls(msgs);
@@ -215,7 +186,7 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
       return msgs;
     }
 
-    await prepareMessagesForApi(messages);
+    prepareMessagesForApi(messages);
 
     let response = await getClient().chat.completions.create({
       model: AI_MODEL,
@@ -266,7 +237,7 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
         ...(await getMessages(userId)),
       ];
 
-      await prepareMessagesForApi(updatedMessages);
+      prepareMessagesForApi(updatedMessages);
 
       response = await getClient().chat.completions.create({
         model: AI_MODEL,
@@ -323,4 +294,4 @@ function validateMessages(messages) {
   }
 }
 
-module.exports = { processMessage, ensureToolResponses };
+module.exports = { processMessage };
