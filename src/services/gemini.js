@@ -57,22 +57,30 @@ async function ensureToolResponses(msgs) {
             }
           }
           if (!found) {
-            console.warn(`[GEMINI] Missing tool response for tool_call_id=${id}. Attempting to retry.`);
-            try {
-              const toolResult = await handleFunctionCall(tc.function.name, JSON.parse(tc.function.arguments || '{}'), m.userId, m.channelId);
-              const toolMessage = {
-                role: 'tool',
-                name: tc.function.name,
-                tool_call_id: id,
-                content: JSON.stringify(toolResult),
-              };
-              msgs.splice(i + 1, 0, toolMessage);
-              console.log(`[GEMINI] Successfully retried tool execution for tool_call_id=${id}`);
-            } catch (retryError) {
-              console.error(`[GEMINI] Retry failed for tool_call_id=${id}:`, retryError.message);
-              const placeholder = { role: 'tool', tool_call_id: id, name: 'auto', content: JSON.stringify({ error: 'Tool response missing; auto-inserted placeholder' }) };
+            console.warn(`[GEMINI] Missing tool response for tool_call_id=${id}.`);
+            // Avoid retrying tools that may trigger scheduler recursion or external state
+            const fname = tc.function?.name;
+            if (fname === 'run_job_now' || fname === 'run_now' || fname === 'runJobNow') {
+              console.warn(`[GEMINI] Skipping retry for recursive tool ${fname} (id=${id}). Inserting placeholder.`);
+              const placeholder = { role: 'tool', tool_call_id: id, name: fname || 'auto', content: JSON.stringify({ error: 'Tool response skipped to avoid recursion' }) };
               msgs.splice(i + 1, 0, placeholder);
-              console.warn(`[GEMINI] Inserted placeholder tool response for tool_call_id=${id}`);
+            } else {
+              try {
+                const toolResult = await handleFunctionCall(fname, JSON.parse(tc.function.arguments || '{}'), m.userId, m.channelId);
+                const toolMessage = {
+                  role: 'tool',
+                  name: fname,
+                  tool_call_id: id,
+                  content: JSON.stringify(toolResult),
+                };
+                msgs.splice(i + 1, 0, toolMessage);
+                console.log(`[GEMINI] Successfully retried tool execution for tool_call_id=${id}`);
+              } catch (retryError) {
+                console.error(`[GEMINI] Retry failed for tool_call_id=${id}:`, retryError?.message);
+                const placeholder = { role: 'tool', tool_call_id: id, name: fname || 'auto', content: JSON.stringify({ error: 'Tool response missing; auto-inserted placeholder' }) };
+                msgs.splice(i + 1, 0, placeholder);
+                console.warn(`[GEMINI] Inserted placeholder tool response for tool_call_id=${id}`);
+              }
             }
             i++; // Skip over the inserted response
           }
