@@ -256,41 +256,36 @@ function sanitizeMessages(messages) {
 }
 
 /**
- * Make message list valid for the API: no placeholders, no retries.
- * - For each assistant with tool_calls, keep only tool_calls that have a matching tool message immediately after (in order). Remove the rest; delete tool_calls if none left.
- * - Remove any tool message that does not follow an assistant message containing that tool_call_id.
+ * Make message list valid for the API: never send assistant + tool_calls without exact tool responses.
+ * If an assistant has tool_calls but the next N messages aren't exactly the matching tool messages in order,
+ * remove that assistant's tool_calls and remove all consecutive tool messages after it.
  */
 function stripInvalidToolCalls(msgs) {
   if (!Array.isArray(msgs)) return;
-  for (let i = 0; i < msgs.length; i++) {
+  let i = 0;
+  while (i < msgs.length) {
     const m = msgs[i];
-    if (!m || m.role !== 'assistant' || !m.tool_calls || !Array.isArray(m.tool_calls)) continue;
-
-    const kept = [];
-    let j = i + 1;
-    for (const tc of m.tool_calls) {
-      if (j < msgs.length && msgs[j] && msgs[j].role === 'tool' && msgs[j].tool_call_id === tc.id) {
-        kept.push(tc);
-        j++;
-      }
-    }
-    if (kept.length === 0) {
-      delete m.tool_calls;
-    } else {
-      m.tool_calls = kept;
-    }
-  }
-  // Remove orphan tool messages (from end so indices stay valid)
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    if (msgs[i]?.role !== 'tool') continue;
-    const tid = msgs[i].tool_call_id;
-    const prev = i > 0 ? msgs[i - 1] : null;
-    if (!prev || prev.role !== 'assistant' || !prev.tool_calls || !Array.isArray(prev.tool_calls)) {
-      msgs.splice(i, 1);
+    if (!m || m.role !== 'assistant' || !m.tool_calls || !Array.isArray(m.tool_calls)) {
+      i++;
       continue;
     }
-    const hasId = prev.tool_calls.some(tc => tc.id === tid);
-    if (!hasId) msgs.splice(i, 1);
+    const ids = m.tool_calls.map(tc => tc.id);
+    let j = i + 1;
+    let valid = true;
+    for (const id of ids) {
+      if (j >= msgs.length || !msgs[j] || msgs[j].role !== 'tool' || msgs[j].tool_call_id !== id) {
+        valid = false;
+        break;
+      }
+      j++;
+    }
+    if (!valid) {
+      delete m.tool_calls;
+      while (i + 1 < msgs.length && msgs[i + 1]?.role === 'tool') {
+        msgs.splice(i + 1, 1);
+      }
+    }
+    i++;
   }
 }
 
