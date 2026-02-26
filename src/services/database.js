@@ -325,6 +325,21 @@ async function getAllMemories(userId) {
   );
 }
 
+/**
+ * Delete all memories for a user, or all memories when userId is null/undefined.
+ * @param {string|null} userId
+ * @returns {Promise<number>} number of rows deleted
+ */
+async function deleteAllMemories(userId = null) {
+  await getDb();
+  if (userId) {
+    const res = runSql('DELETE FROM memories WHERE user_id = ?', [userId]);
+    return res.changes;
+  }
+  const res = runSql('DELETE FROM memories', []);
+  return res.changes;
+}
+
 // ──────────────────────────────────────
 // Scheduled Tasks
 // ──────────────────────────────────────
@@ -338,6 +353,36 @@ async function getAllScheduledTasks() {
   const rows = queryAll('SELECT id, user_id, channel_id, cron_expression, task_description, created_at FROM scheduled_tasks ORDER BY id');
   console.log(`[DB] getAllScheduledTasks() returning ${rows.length} row(s)`);
   return rows;
+}
+
+/**
+ * Delete all scheduled tasks for a user, or all when userId is null/undefined.
+ * @param {string|null} userId
+ * @returns {Promise<number>} number of rows deleted
+ */
+async function deleteAllScheduledTasks(userId = null) {
+  await getDb();
+  if (userId) {
+    const res = runSql('DELETE FROM scheduled_tasks WHERE user_id = ?', [userId]);
+    return res.changes;
+  }
+  const res = runSql('DELETE FROM scheduled_tasks', []);
+  return res.changes;
+}
+
+/**
+ * Delete all messages for a user, or all messages when userId is null/undefined.
+ * @param {string|null} userId
+ * @returns {Promise<number>} number of rows deleted
+ */
+async function deleteAllMessages(userId = null) {
+  await getDb();
+  if (userId) {
+    const res = runSql('DELETE FROM messages WHERE user_id = ?', [userId]);
+    return res.changes;
+  }
+  const res = runSql('DELETE FROM messages', []);
+  return res.changes;
 }
 
 /**
@@ -401,4 +446,7 @@ module.exports = {
   getScheduledTasksByUser,
   addScheduledTask,
   removeScheduledTask,
+  deleteAllMemories,
+  deleteAllScheduledTasks,
+  deleteAllMessages,
 };

@@ -12,7 +12,7 @@ module.exports = {
 
   // OpenAI
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
-  AI_MODEL: 'gpt-4.1-nano',
+  AI_MODEL: process.env.AI_MODEL || 'gpt-5-mini',
 
   // Paths
   SANDBOX_ROOT: path.resolve(__dirname, '..', 'workspace'),

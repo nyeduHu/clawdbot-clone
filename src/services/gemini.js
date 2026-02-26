@@ -63,6 +63,32 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
   ];
 
   try {
+    // Ensure tool response messages exist for any assistant tool_calls (safety net)
+    function ensureToolResponses(msgs) {
+      try {
+        const needed = new Set();
+        const present = new Set();
+
+        for (const m of msgs) {
+          if (m.tool_calls && Array.isArray(m.tool_calls)) {
+            for (const tc of m.tool_calls) needed.add(tc.id);
+          }
+          if (m.role === 'tool' && m.tool_call_id) present.add(m.tool_call_id);
+        }
+
+        for (const id of needed) {
+          if (!present.has(id)) {
+            // Insert a placeholder tool response so the API call is well-formed
+            msgs.push({ role: 'tool', tool_call_id: id, name: 'auto', content: JSON.stringify({ error: 'Tool response missing; auto-inserted placeholder' }) });
+          }
+        }
+      } catch (e) {
+        console.error('[GEMINI] ensureToolResponses failed:', e?.message);
+      }
+    }
+
+    ensureToolResponses(messages);
+
     let response = await getClient().chat.completions.create({
       model: AI_MODEL,
       messages,
@@ -111,6 +137,8 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
         { role: 'system', content: systemInstruction },
         ...(await getMessages(userId)),
       ];
+
+      ensureToolResponses(updatedMessages);
 
       response = await getClient().chat.completions.create({
         model: AI_MODEL,
