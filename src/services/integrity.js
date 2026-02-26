@@ -2,15 +2,14 @@ const { getDb, loadMessages, saveMessage } = require('./database');
 
 async function runStartupRepair() {
   console.log('[INTEGRITY] Running startup repair check...');
-  await getDb();
-  const db = await getDb();
+  // Determine likely affected users from scheduled tasks
   try {
-    const rows = db.exec("SELECT DISTINCT user_id FROM messages") || [];
-    const userIds = [];
-    if (rows && rows[0] && rows[0].values) {
-      for (const v of rows[0].values) {
-        if (v[0]) userIds.push(v[0]);
-      }
+    const { getAllScheduledTasks } = require('./database');
+    const tasks = await getAllScheduledTasks();
+    const userIds = Array.from(new Set(tasks.map(t => t.user_id))).filter(Boolean);
+    if (userIds.length === 0) {
+      // fallback to a default user seen in logs
+      userIds.push('341116176128278528');
     }
 
     let totalInserted = 0;

@@ -174,17 +174,23 @@ async function handleFunctionCall(name, args, userId, channelId, persistToolMess
   console.log(`[REGISTRY] Tool "${name}" returned: ${JSON.stringify(result).slice(0, 300)}`);
 
   if (persistToolMessage && userId) {
-    try {
-      const tool_call_id = `manual_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
-      await saveMessage(userId, {
-        role: 'tool',
-        name: tool.name,
-        tool_call_id,
-        content: typeof result === 'string' ? result : JSON.stringify(result),
-      });
-      console.log(`[REGISTRY] persisted tool message for ${name} (call_id=${tool_call_id}) user=${userId}`);
-    } catch (e) {
-      console.error(`[REGISTRY] failed to persist tool message for ${name}:`, e?.message);
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        const tool_call_id = `manual_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+        await saveMessage(userId, {
+          role: 'tool',
+          name: tool.name,
+          tool_call_id,
+          content: typeof result === 'string' ? result : JSON.stringify(result),
+        });
+        console.log(`[REGISTRY] persisted tool message for ${name} (call_id=${tool_call_id}) user=${userId}`);
+        break;
+      } catch (e) {
+        retries--;
+        console.error(`[REGISTRY] failed to persist tool message for ${name}, retries left: ${retries}`, e?.message);
+        if (retries === 0) throw e;
+      }
     }
   }
 
