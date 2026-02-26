@@ -54,7 +54,7 @@ module.exports = {
       const imageParts = await processImages(message.attachments);
 
       // Call Gemini
-      const response = await processMessage(message.author.id, text, imageParts);
+      const response = await processMessage(message.author.id, text, imageParts, message.channelId);
 
       // Split and send response
       const chunks = splitMessage(response);

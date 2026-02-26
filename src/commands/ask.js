@@ -10,7 +10,7 @@ module.exports = {
     await interaction.deferReply();
 
     try {
-      const response = await processMessage(interaction.user.id, prompt);
+      const response = await processMessage(interaction.user.id, prompt, [], interaction.channelId);
       const chunks = splitMessage(response);
 
       await interaction.editReply(chunks[0]);

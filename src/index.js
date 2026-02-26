@@ -36,10 +36,19 @@ for (const file of eventFiles) {
 }
 
 // Ready event
-client.once('ready', () => {
+client.once('ready', async () => {
   console.log(`\n🤖 ${client.user.tag} is online!`);
   console.log(`   Guilds: ${client.guilds.cache.size}`);
   console.log(`   Invite: https://discord.com/oauth2/authorize?client_id=${client.user.id}&permissions=274877975552&scope=bot%20applications.commands\n`);
+
+  // Initialize scheduler
+  try {
+    const { setClient, init } = require('./services/scheduler');
+    setClient(client);
+    await init();
+  } catch (err) {
+    console.error('❌ Scheduler init error:', err.message);
+  }
 });
 
 // Load tools

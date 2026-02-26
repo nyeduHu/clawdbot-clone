@@ -84,6 +84,17 @@ function getDb() {
     db.run('CREATE INDEX IF NOT EXISTS idx_memories_user_id ON memories(user_id)');
     db.run('CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(user_id, category)');
 
+    db.run(`
+      CREATE TABLE IF NOT EXISTS scheduled_tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        cron_expression TEXT NOT NULL,
+        task_description TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+      )
+    `);
+
     saveToDisk();
     console.log('✅ Database initialized:', DB_PATH);
   })();
@@ -302,6 +313,54 @@ async function getAllMemories(userId) {
   );
 }
 
+// ──────────────────────────────────────
+// Scheduled Tasks
+// ──────────────────────────────────────
+
+/**
+ * @returns {Promise<Array>}
+ */
+async function getAllScheduledTasks() {
+  await getDb();
+  return queryAll('SELECT id, user_id, channel_id, cron_expression, task_description, created_at FROM scheduled_tasks ORDER BY id');
+}
+
+/**
+ * @param {string} userId
+ * @returns {Promise<Array>}
+ */
+async function getScheduledTasksByUser(userId) {
+  await getDb();
+  return queryAll('SELECT id, user_id, channel_id, cron_expression, task_description, created_at FROM scheduled_tasks WHERE user_id = ?', [userId]);
+}
+
+/**
+ * @param {string} userId
+ * @param {string} channelId
+ * @param {string} cronExpression
+ * @param {string} taskDescription
+ * @returns {Promise<{ id: number }>}
+ */
+async function addScheduledTask(userId, channelId, cronExpression, taskDescription) {
+  await getDb();
+  const result = runSql(
+    'INSERT INTO scheduled_tasks (user_id, channel_id, cron_expression, task_description) VALUES (?, ?, ?, ?)',
+    [userId, channelId, cronExpression, taskDescription],
+  );
+  return { id: result.lastID };
+}
+
+/**
+ * @param {number} taskId
+ * @param {string} userId
+ * @returns {Promise<boolean>}
+ */
+async function removeScheduledTask(taskId, userId) {
+  await getDb();
+  const result = runSql('DELETE FROM scheduled_tasks WHERE id = ? AND user_id = ?', [taskId, userId]);
+  return result.changes > 0;
+}
+
 module.exports = {
   getDb,
   saveMessage,
@@ -313,4 +372,8 @@ module.exports = {
   recallMemories,
   deleteMemory,
   getAllMemories,
+  getAllScheduledTasks,
+  getScheduledTasksByUser,
+  addScheduledTask,
+  removeScheduledTask,
 };

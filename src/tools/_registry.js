@@ -153,9 +153,10 @@ function buildTools() {
  * @param {string} name - Tool name
  * @param {object} args - Arguments from the function call
  * @param {string} [userId] - Discord user ID (passed to tools that need it)
+ * @param {string} [channelId] - Discord channel ID (passed to tools that need it)
  * @returns {Promise<any>} Tool result
  */
-async function handleFunctionCall(name, args, userId) {
+async function handleFunctionCall(name, args, userId, channelId) {
   const tool = registry.get(name);
   if (!tool) {
     throw new Error(`Unknown tool: ${name}`);
@@ -163,7 +164,7 @@ async function handleFunctionCall(name, args, userId) {
   if (pendingApproval.has(name)) {
     throw new Error(`Tool "${name}" is pending approval. Use /tools approve ${name} first.`);
   }
-  return await tool.execute(args, userId);
+  return await tool.execute(args, userId, channelId);
 }
 
 /**

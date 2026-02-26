@@ -26,9 +26,10 @@ const MAX_TOOL_ROUNDS = 10;
  * @param {string} userId - Discord user ID
  * @param {string} text - User's text message
  * @param {Array} [imageParts=[]] - Image parts as { base64, mimeType }
+ * @param {string} [channelId=null] - Discord channel ID (for tools that need it)
  * @returns {Promise<string>} The final text response
  */
-async function processMessage(userId, text, imageParts = []) {
+async function processMessage(userId, text, imageParts = [], channelId = null) {
   const systemInstruction = await getSystemInstruction(userId);
   const tools = buildTools();
 
@@ -87,7 +88,7 @@ async function processMessage(userId, text, imageParts = []) {
 
         let result;
         try {
-          result = await handleFunctionCall(name, args, userId);
+          result = await handleFunctionCall(name, args, userId, channelId);
         } catch (err) {
           result = { error: err.message };
           console.error(`❌ Tool error (${name}):`, err.message);
