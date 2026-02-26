@@ -66,8 +66,15 @@ async function performTask(task) {
     console.error(`[SCHEDULER] ❌ Task #${task.id}: Discord client is NULL — cannot send messages`);
     return;
   }
-
   try {
+    console.log(`[SCHEDULER]   Fetching channel ${task.channel_id}...`);
+    const channel = await discordClient.channels.fetch(task.channel_id);
+    console.log(`[SCHEDULER]   Channel fetched: ${channel?.id ?? 'NULL'}, type=${channel?.type}, sendable=${typeof channel?.send}`);
+    if (!channel || !channel.send) {
+      console.error(`[SCHEDULER] ❌ Task #${task.id}: Channel ${task.channel_id} not found or not text-based`);
+      return;
+    }
+
     // First attempt: if a generated tool `generate_voiceover_transcriptions` exists, call it directly
     try {
       const { handleFunctionCall, registry } = require('../tools/_registry');
@@ -85,14 +92,6 @@ async function performTask(task) {
       }
     } catch (err) {
       console.log(`[SCHEDULER] generate_voiceover_transcriptions tool call failed or not available: ${err?.message}`);
-    }
-
-    console.log(`[SCHEDULER]   Fetching channel ${task.channel_id}...`);
-    const channel = await discordClient.channels.fetch(task.channel_id);
-    console.log(`[SCHEDULER]   Channel fetched: ${channel?.id ?? 'NULL'}, type=${channel?.type}, sendable=${typeof channel?.send}`);
-    if (!channel || !channel.send) {
-      console.error(`[SCHEDULER] ❌ Task #${task.id}: Channel ${task.channel_id} not found or not text-based`);
-      return;
     }
 
     // Lazy-require to avoid circular dependency
