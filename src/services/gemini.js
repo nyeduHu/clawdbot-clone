@@ -294,4 +294,4 @@ function validateMessages(messages) {
   }
 }
 
-module.exports = { processMessage };
+module.exports = { processMessage, ensureToolResponses };
