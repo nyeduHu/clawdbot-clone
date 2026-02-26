@@ -19,10 +19,9 @@ function getClient() {
   return client;
 }
 
-// Maximum function-call loop iterations to prevent infinite loops
 const MAX_TOOL_ROUNDS = 10;
-// How many times to attempt inserting placeholders before removing tool_calls
-const CLEANUP_RETRIES = 2;
+/** Tool names to hide when running a scheduled task (avoids model re-calling scheduler). */
+const SCHEDULED_TASK_EXCLUDED_TOOLS = ['run_job_now', 'list_tasks', 'add_scheduled_task', 'remove_scheduled_task'];
 
 const LOG_DIR = path.resolve(__dirname, '..', '..', 'logs');
 
@@ -82,159 +81,10 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
     ...(await getMessages(userId)),
   ];
 
-  // Call sanitizeMessages before validateMessages
   sanitizeMessages(messages);
+  stripInvalidToolCalls(messages);
 
   try {
-    // Ensure tool response messages exist for any assistant tool_calls (safety net).
-    // For run_job_now with missing response: remove that tool_call (never retry → avoids recursion).
-    // For others: retry or insert placeholder. Insert in tool_calls order so API sees correct pairing.
-    async function ensureToolResponses(msgs) {
-      try {
-        for (let i = 0; i < msgs.length; i++) {
-          const m = msgs[i];
-          if (!m || !m.tool_calls || !Array.isArray(m.tool_calls) || m.tool_calls.length === 0) continue;
-
-          // First pass: if ALL missing are run_job_now, strip them and skip to next message
-          let anyRunJobNowDropped = false;
-          const stillNeeded = [];
-          for (const tc of m.tool_calls) {
-            const id = tc.id;
-            let found = false;
-            for (let j = i + 1; j < msgs.length; j++) {
-              const later = msgs[j];
-              if (later && later.role === 'tool' && later.tool_call_id === id) {
-                found = true;
-                break;
-              }
-            }
-            if (!found && (tc.function?.name === 'run_job_now')) {
-              anyRunJobNowDropped = true;
-              continue;
-            }
-            if (!found) stillNeeded.push(tc);
-          }
-          if (anyRunJobNowDropped && stillNeeded.length === 0) {
-            m.tool_calls = m.tool_calls.filter(tc => {
-              let found = false;
-              for (let j = i + 1; j < msgs.length; j++) {
-                if (msgs[j]?.role === 'tool' && msgs[j].tool_call_id === tc.id) { found = true; break; }
-              }
-              return found;
-            });
-            if (m.tool_calls.length === 0) delete m.tool_calls;
-            console.warn(`[GEMINI] Removed run_job_now tool_call(s) from assistant message (no response).`);
-            continue;
-          }
-
-          // Second pass: for missing non–run_job_now, retry or insert placeholder; insert in order (same as tool_calls)
-          let insertOffset = 0;
-          for (const tc of m.tool_calls) {
-            const id = tc.id;
-            let found = false;
-            for (let j = i + 1 + insertOffset; j < msgs.length; j++) {
-              const later = msgs[j];
-              if (later && later.role === 'tool' && later.tool_call_id === id) {
-                found = true;
-                break;
-              }
-            }
-            if (found) continue;
-
-            const toolName = tc.function?.name || 'unknown';
-            if (toolName === 'run_job_now') {
-              m.tool_calls = m.tool_calls.filter(t => t.id !== id);
-              if (m.tool_calls.length === 0) delete m.tool_calls;
-              console.warn(`[GEMINI] Removed run_job_now tool_call (id=${id}) from assistant message.`);
-              continue;
-            }
-
-            console.warn(`[GEMINI] Missing tool response for tool_call_id=${id}. Attempting to retry.`);
-            let toolMessage;
-            try {
-              const toolResult = await handleFunctionCall(toolName, JSON.parse(tc.function.arguments || '{}'), userId, channelId);
-              toolMessage = { role: 'tool', name: toolName, tool_call_id: id, content: JSON.stringify(toolResult) };
-              console.log(`[GEMINI] Successfully retried tool execution for tool_call_id=${id}`);
-            } catch (retryError) {
-              console.error(`[GEMINI] Retry failed for tool_call_id=${id}:`, retryError.message);
-              toolMessage = { role: 'tool', tool_call_id: id, name: 'auto', content: JSON.stringify({ error: 'Tool response missing; auto-inserted placeholder' }) };
-            }
-            msgs.splice(i + 1 + insertOffset, 0, toolMessage);
-            insertOffset++;
-          }
-          i += insertOffset;
-        }
-      } catch (e) {
-        console.error('[GEMINI] ensureToolResponses failed:', e?.message);
-      }
-    }
-
-    function findMissingToolCalls(msgs) {
-      const missingMap = new Map();
-      for (let i = 0; i < msgs.length; i++) {
-        const m = msgs[i];
-        if (m && m.tool_calls && Array.isArray(m.tool_calls)) {
-          for (const tc of m.tool_calls) {
-            const id = tc.id;
-            let found = false;
-            for (let j = i + 1; j < msgs.length; j++) {
-              const later = msgs[j];
-              if (later && later.role === 'tool' && later.tool_call_id === id) {
-                found = true;
-                break;
-              }
-            }
-            if (!found) {
-              if (!missingMap.has(i)) missingMap.set(i, []);
-              missingMap.get(i).push(id);
-            }
-          }
-        }
-      }
-      return missingMap;
-    }
-
-    function cleanupMissingToolCalls(msgs) {
-      const missing = findMissingToolCalls(msgs);
-      if (missing.size === 0) return false;
-      // Process in descending index order so splice doesn't invalidate other indices
-      const entries = Array.from(missing.entries()).sort((a, b) => b[0] - a[0]);
-      for (const [idx, ids] of entries) {
-        const m = msgs[idx];
-        if (!m) continue;
-        const idSet = new Set(ids);
-        delete m.tool_calls;
-        console.warn(`[GEMINI] removed ${ids.length} missing tool_calls from assistant message at index ${idx}`);
-        // Remove orphan tool responses: API requires every 'tool' message to follow an assistant with tool_calls.
-        // Otherwise we get: "messages with role 'tool' must be a response to a preceding message with 'tool_calls'"
-        let j = idx + 1;
-        while (j < msgs.length && msgs[j] && msgs[j].role === 'tool' && idSet.has(msgs[j].tool_call_id)) {
-          msgs.splice(j, 1);
-        }
-      }
-      return true;
-    }
-
-    function prepareMessagesForApi(msgs) {
-      // Ensure placeholders appear immediately after assistant tool_calls
-      ensureToolResponses(msgs);
-      for (let attempt = 0; attempt <= CLEANUP_RETRIES; attempt++) {
-        const missing = findMissingToolCalls(msgs);
-        if (missing.size === 0) return msgs;
-        if (attempt < CLEANUP_RETRIES) {
-          // try to insert placeholders again (no-op if already inserted)
-          ensureToolResponses(msgs);
-        } else {
-          // final fallback: remove tool_calls from problematic assistant messages
-          cleanupMissingToolCalls(msgs);
-          persistMessages('messages_before_cleanup', msgs);
-          return msgs;
-        }
-      }
-      return msgs;
-    }
-
-    prepareMessagesForApi(messages);
 
     let response = await getClient().chat.completions.create({
       model: AI_MODEL,
@@ -279,13 +129,12 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
         });
       }
 
-      // Call again with updated messages
       const updatedMessages = [
         { role: 'system', content: systemInstruction },
         ...(await getMessages(userId)),
       ];
-
-      prepareMessagesForApi(updatedMessages);
+      sanitizeMessages(updatedMessages);
+      stripInvalidToolCalls(updatedMessages);
 
       response = await getClient().chat.completions.create({
         model: AI_MODEL,
@@ -324,12 +173,124 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
   }
 }
 
+/**
+ * Run a scheduled task: one-shot completion with no conversation history and no scheduler tools.
+ * Used by the scheduler so the model cannot call run_job_now again (no recursion).
+ *
+ * @param {string} userId - Discord user ID (for system instruction / persona)
+ * @param {string} channelId - Discord channel ID (for tools that need it)
+ * @param {string} taskDescription - Full task text
+ * @returns {Promise<string>} Final assistant text
+ */
+async function runScheduledTask(userId, channelId, taskDescription) {
+  console.log(`[GEMINI] runScheduledTask() called: userId=${userId}, channelId=${channelId}, taskLen=${taskDescription?.length}`);
+  const systemInstruction = await getSystemInstruction(userId);
+  const tools = buildTools({ exclude: SCHEDULED_TASK_EXCLUDED_TOOLS });
+
+  const dateContext = `[Current date/time: ${new Date().toISOString()}]\n\n`;
+  const prompt = `[SCHEDULED TASK] Perform the following task and post the result:\n\n${taskDescription}`;
+  const messages = [
+    { role: 'system', content: systemInstruction },
+    { role: 'user', content: dateContext + prompt },
+  ];
+
+  try {
+    let response = await getClient().chat.completions.create({
+      model: AI_MODEL,
+      messages,
+      tools: tools || undefined,
+    });
+    let assistantMessage = response.choices[0].message;
+
+    let rounds = 0;
+    while (assistantMessage.tool_calls && rounds < MAX_TOOL_ROUNDS) {
+      for (const toolCall of assistantMessage.tool_calls) {
+        const name = toolCall.function.name;
+        let args = {};
+        try {
+          args = JSON.parse(toolCall.function.arguments || '{}');
+        } catch {}
+        console.log(`🔧 [scheduled] Tool call: ${name}(${JSON.stringify(args).slice(0, 200)})`);
+        let result;
+        try {
+          result = await handleFunctionCall(name, args, userId, channelId);
+        } catch (err) {
+          result = { error: err.message };
+          console.error(`❌ Tool error (${name}):`, err.message);
+        }
+        console.log(`   → Result: ${JSON.stringify(result).slice(0, 200)}`);
+        messages.push(assistantMessage);
+        messages.push({
+          role: 'tool',
+          name,
+          tool_call_id: toolCall.id,
+          content: JSON.stringify(result),
+        });
+      }
+      response = await getClient().chat.completions.create({
+        model: AI_MODEL,
+        messages,
+        tools: tools || undefined,
+      });
+      assistantMessage = response.choices[0].message;
+      rounds++;
+    }
+
+    const finalText = assistantMessage.content || '(No response generated)';
+    return finalText;
+  } catch (err) {
+    console.error('[GEMINI] runScheduledTask OpenAI error:', err);
+    if (err.status === 429) return '⚠️ Rate limit reached. Please try again later.';
+    if (err.message?.includes('API key') || err.status === 401) return '⚠️ Invalid API key.';
+    return `⚠️ Error: ${err.message}`;
+  }
+}
+
 function sanitizeMessages(messages) {
   for (const msg of messages) {
     if (msg.role === 'assistant' && (msg.content === null || msg.content === undefined)) {
       console.warn(`[GEMINI] Replacing null content in assistant message with placeholder.`);
       msg.content = '(No content provided)';
     }
+  }
+}
+
+/**
+ * Make message list valid for the API: no placeholders, no retries.
+ * - For each assistant with tool_calls, keep only tool_calls that have a matching tool message immediately after (in order). Remove the rest; delete tool_calls if none left.
+ * - Remove any tool message that does not follow an assistant message containing that tool_call_id.
+ */
+function stripInvalidToolCalls(msgs) {
+  if (!Array.isArray(msgs)) return;
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i];
+    if (!m || m.role !== 'assistant' || !m.tool_calls || !Array.isArray(m.tool_calls)) continue;
+
+    const kept = [];
+    let j = i + 1;
+    for (const tc of m.tool_calls) {
+      if (j < msgs.length && msgs[j] && msgs[j].role === 'tool' && msgs[j].tool_call_id === tc.id) {
+        kept.push(tc);
+        j++;
+      }
+    }
+    if (kept.length === 0) {
+      delete m.tool_calls;
+    } else {
+      m.tool_calls = kept;
+    }
+  }
+  // Remove orphan tool messages (from end so indices stay valid)
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i]?.role !== 'tool') continue;
+    const tid = msgs[i].tool_call_id;
+    const prev = i > 0 ? msgs[i - 1] : null;
+    if (!prev || prev.role !== 'assistant' || !prev.tool_calls || !Array.isArray(prev.tool_calls)) {
+      msgs.splice(i, 1);
+      continue;
+    }
+    const hasId = prev.tool_calls.some(tc => tc.id === tid);
+    if (!hasId) msgs.splice(i, 1);
   }
 }
 
@@ -342,4 +303,4 @@ function validateMessages(messages) {
   }
 }
 
-module.exports = { processMessage };
+module.exports = { processMessage, runScheduledTask };

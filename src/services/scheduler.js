@@ -95,12 +95,11 @@ async function performTask(task) {
       console.log(`[SCHEDULER] generate_voiceover_transcriptions tool call failed or not available: ${err?.message}`);
     }
 
-    // Lazy-require to avoid circular dependency
     const { processMessage } = require('./gemini');
-    console.log(`[SCHEDULER]   processMessage loaded, calling with userId=${task.user_id}...`);
+    console.log(`[SCHEDULER]   Sending scheduled prompt as user message (same as chat)...`);
 
-    const prompt = `[SCHEDULED TASK] Perform the following task and post the result:\n\n${task.task_description}`;
-    console.log(`[SCHEDULER]   Prompt: "${prompt.slice(0, 120)}..."`);
+    const prompt = task.task_description;
+    console.log(`[SCHEDULER]   Prompt: "${prompt.slice(0, 120)}${prompt.length > 120 ? '...' : ''}"`);
     const result = await processMessage(task.user_id, prompt, [], task.channel_id);
     console.log(`[SCHEDULER]   processMessage returned ${result ? result.length : 0} chars`);
 
@@ -112,7 +111,7 @@ async function performTask(task) {
       }
       console.log(`[SCHEDULER]   ✅ Task #${task.id} output sent to channel successfully`);
     } else {
-      console.log(`[SCHEDULER]   ⚠️ Task #${task.id}: processMessage returned empty result`);
+      console.log(`[SCHEDULER]   ⚠️ Task #${task.id}: empty result`);
     }
   } catch (err) {
     console.error(`[SCHEDULER] ❌ Scheduled task #${task.id} failed:`, err.message);

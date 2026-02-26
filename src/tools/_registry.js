@@ -125,14 +125,16 @@ function loadAllTools() {
 /**
  * Convert the registry into OpenAI's tools format.
  * Only includes active (non-pending) tools.
+ * @param {{ exclude?: string[] }} [opts] - Optional. exclude: tool names to omit (e.g. ['run_job_now'] for scheduled context).
  * @returns {Array<{ type: 'function', function: { name, description, parameters } }> | undefined}
  */
-function buildTools() {
+function buildTools(opts) {
+  const excludeSet = opts?.exclude && Array.isArray(opts.exclude) ? new Set(opts.exclude) : null;
   const tools = [];
 
   for (const [name, tool] of registry) {
-    // Skip pending tools
     if (pendingApproval.has(name)) continue;
+    if (excludeSet && excludeSet.has(name)) continue;
 
     tools.push({
       type: 'function',
