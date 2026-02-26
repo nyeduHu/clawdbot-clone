@@ -10,6 +10,9 @@ const { splitMessage } = require('../utils/messageSplitter');
 /** @type {Map<number, import('node-cron').ScheduledTask>} */
 const activeJobs = new Map();
 
+/** @type {Map<number, object>} */
+const taskStore = new Map();
+
 /** @type {import('discord.js').Client | null} */
 let discordClient = null;
 
@@ -35,49 +38,11 @@ function startJob(task) {
   }
   console.log(`[SCHEDULER] ✅ Cron expression valid: "${task.cron_expression}"`);
 
+  // Store the task object so it can be triggered manually later
+  taskStore.set(task.id, task);
+
   const job = cron.schedule(task.cron_expression, async () => {
-    console.log(`[SCHEDULER] ⏰ CRON FIRED for task #${task.id} at ${new Date().toISOString()}`);
-    console.log(`[SCHEDULER]   Description: "${task.task_description}"`);
-    console.log(`[SCHEDULER]   Channel: ${task.channel_id}, User: ${task.user_id}`);
-
-    console.log(`[SCHEDULER]   discordClient available: ${!!discordClient}`);
-    if (!discordClient) {
-      console.error(`[SCHEDULER] ❌ Task #${task.id}: Discord client is NULL — cannot send messages`);
-      return;
-    }
-
-    try {
-      console.log(`[SCHEDULER]   Fetching channel ${task.channel_id}...`);
-      const channel = await discordClient.channels.fetch(task.channel_id);
-      console.log(`[SCHEDULER]   Channel fetched: ${channel?.id ?? 'NULL'}, type=${channel?.type}, sendable=${typeof channel?.send}`);
-      if (!channel || !channel.send) {
-        console.error(`[SCHEDULER] ❌ Task #${task.id}: Channel ${task.channel_id} not found or not text-based`);
-        return;
-      }
-
-      // Lazy-require to avoid circular dependency
-      const { processMessage } = require('./gemini');
-      console.log(`[SCHEDULER]   processMessage loaded, calling with userId=${task.user_id}...`);
-
-      const prompt = `[SCHEDULED TASK] Perform the following task and post the result:\n\n${task.task_description}`;
-      console.log(`[SCHEDULER]   Prompt: "${prompt.slice(0, 120)}..."`);
-      const result = await processMessage(task.user_id, prompt, [], task.channel_id);
-      console.log(`[SCHEDULER]   processMessage returned ${result ? result.length : 0} chars`);
-
-      if (result && result.trim()) {
-        const chunks = splitMessage(result);
-        console.log(`[SCHEDULER]   Sending ${chunks.length} message chunk(s) to channel...`);
-        for (const chunk of chunks) {
-          await channel.send(chunk);
-        }
-        console.log(`[SCHEDULER]   ✅ Task #${task.id} output sent to channel successfully`);
-      } else {
-        console.log(`[SCHEDULER]   ⚠️ Task #${task.id}: processMessage returned empty result`);
-      }
-    } catch (err) {
-      console.error(`[SCHEDULER] ❌ Scheduled task #${task.id} failed:`, err.message);
-      console.error(`[SCHEDULER]   Stack:`, err.stack);
-    }
+    await performTask(task);
   });
 
   activeJobs.set(task.id, job);
@@ -85,6 +50,55 @@ function startJob(task) {
   console.log(`[SCHEDULER]   Expression: "${task.cron_expression}"`);
   console.log(`[SCHEDULER]   Description: "${task.task_description.slice(0, 100)}"`);
   console.log(`[SCHEDULER]   Active jobs count: ${activeJobs.size}`);
+}
+
+/**
+ * Perform the work for a scheduled task (extracted so it can be run manually).
+ * @param {object} task
+ */
+async function performTask(task) {
+  console.log(`[SCHEDULER] ⏰ performTask called for #${task.id} at ${new Date().toISOString()}`);
+  console.log(`[SCHEDULER]   Description: "${task.task_description}"`);
+  console.log(`[SCHEDULER]   Channel: ${task.channel_id}, User: ${task.user_id}`);
+
+  console.log(`[SCHEDULER]   discordClient available: ${!!discordClient}`);
+  if (!discordClient) {
+    console.error(`[SCHEDULER] ❌ Task #${task.id}: Discord client is NULL — cannot send messages`);
+    return;
+  }
+
+  try {
+    console.log(`[SCHEDULER]   Fetching channel ${task.channel_id}...`);
+    const channel = await discordClient.channels.fetch(task.channel_id);
+    console.log(`[SCHEDULER]   Channel fetched: ${channel?.id ?? 'NULL'}, type=${channel?.type}, sendable=${typeof channel?.send}`);
+    if (!channel || !channel.send) {
+      console.error(`[SCHEDULER] ❌ Task #${task.id}: Channel ${task.channel_id} not found or not text-based`);
+      return;
+    }
+
+    // Lazy-require to avoid circular dependency
+    const { processMessage } = require('./gemini');
+    console.log(`[SCHEDULER]   processMessage loaded, calling with userId=${task.user_id}...`);
+
+    const prompt = `[SCHEDULED TASK] Perform the following task and post the result:\n\n${task.task_description}`;
+    console.log(`[SCHEDULER]   Prompt: "${prompt.slice(0, 120)}..."`);
+    const result = await processMessage(task.user_id, prompt, [], task.channel_id);
+    console.log(`[SCHEDULER]   processMessage returned ${result ? result.length : 0} chars`);
+
+    if (result && result.trim()) {
+      const chunks = splitMessage(result);
+      console.log(`[SCHEDULER]   Sending ${chunks.length} message chunk(s) to channel...`);
+      for (const chunk of chunks) {
+        await channel.send(chunk);
+      }
+      console.log(`[SCHEDULER]   ✅ Task #${task.id} output sent to channel successfully`);
+    } else {
+      console.log(`[SCHEDULER]   ⚠️ Task #${task.id}: processMessage returned empty result`);
+    }
+  } catch (err) {
+    console.error(`[SCHEDULER] ❌ Scheduled task #${task.id} failed:`, err.message);
+    console.error(`[SCHEDULER]   Stack:`, err.stack);
+  }
 }
 
 /**
@@ -172,3 +186,20 @@ async function cancelTask(userId, taskId) {
 }
 
 module.exports = { setClient, init, scheduleTask, listTasks, cancelTask };
+
+// Also export a runNow helper for debugging (calls the task handler immediately)
+module.exports.runNow = async function runNow(taskId, callerUserId) {
+  console.log(`[SCHEDULER] runNow() called for taskId=${taskId} by user=${callerUserId}`);
+  const task = taskStore.get(Number(taskId));
+  if (!task) {
+    console.log(`[SCHEDULER] runNow: task ${taskId} not in memory; loading from DB`);
+    const tasks = await getAllScheduledTasks();
+    const found = tasks.find(t => t.id === Number(taskId));
+    if (!found) return { error: 'Task not found' };
+    taskStore.set(found.id, found);
+    await performTask(found);
+    return { success: true };
+  }
+  await performTask(task);
+  return { success: true };
+};
