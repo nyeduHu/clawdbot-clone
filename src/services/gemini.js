@@ -177,15 +177,15 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
       return true;
     }
 
-    function prepareMessagesForApi(msgs) {
+    async function prepareMessagesForApi(msgs) {
       // Ensure placeholders appear immediately after assistant tool_calls
-      ensureToolResponses(msgs);
+      await ensureToolResponses(msgs);
       for (let attempt = 0; attempt <= CLEANUP_RETRIES; attempt++) {
         const missing = findMissingToolCalls(msgs);
         if (missing.size === 0) return msgs;
         if (attempt < CLEANUP_RETRIES) {
           // try to insert placeholders again (no-op if already inserted)
-          ensureToolResponses(msgs);
+          await ensureToolResponses(msgs);
         } else {
           // final fallback: remove tool_calls from problematic assistant messages
           cleanupMissingToolCalls(msgs);
@@ -196,7 +196,7 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
       return msgs;
     }
 
-    prepareMessagesForApi(messages);
+    await prepareMessagesForApi(messages);
 
     let response = await getClient().chat.completions.create({
       model: AI_MODEL,
@@ -247,7 +247,7 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
         ...(await getMessages(userId)),
       ];
 
-      prepareMessagesForApi(updatedMessages);
+      await prepareMessagesForApi(updatedMessages);
 
       response = await getClient().chat.completions.create({
         model: AI_MODEL,
