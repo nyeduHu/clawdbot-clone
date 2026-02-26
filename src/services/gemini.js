@@ -86,53 +86,83 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
   sanitizeMessages(messages);
 
   try {
-    // Ensure tool response messages exist for any assistant tool_calls (safety net)
+    // Ensure tool response messages exist for any assistant tool_calls (safety net).
+    // For run_job_now with missing response: remove that tool_call (never retry → avoids recursion).
+    // For others: retry or insert placeholder. Insert in tool_calls order so API sees correct pairing.
     async function ensureToolResponses(msgs) {
       try {
         for (let i = 0; i < msgs.length; i++) {
           const m = msgs[i];
-          if (m && m.tool_calls && Array.isArray(m.tool_calls) && m.tool_calls.length) {
-            for (const tc of m.tool_calls) {
-              const id = tc.id;
-              let found = false;
-              for (let j = i + 1; j < msgs.length; j++) {
-                const later = msgs[j];
-                if (later && later.role === 'tool' && later.tool_call_id === id) {
-                  found = true;
-                  break;
-                }
-              }
-              if (!found) {
-                const toolName = tc.function?.name || 'unknown';
-                // Never retry run_job_now: it would re-enter the scheduler and cause infinite recursion
-                if (toolName === 'run_job_now') {
-                  const placeholder = { role: 'tool', tool_call_id: id, name: toolName, content: JSON.stringify({ skipped: true, reason: 'recursive run_job_now; placeholder to avoid re-entry' }) };
-                  msgs.splice(i + 1, 0, placeholder);
-                  console.warn(`[GEMINI] Skipping retry for recursive tool run_job_now (id=${id}). Inserting placeholder.`);
-                  i++;
-                  continue;
-                }
-                console.warn(`[GEMINI] Missing tool response for tool_call_id=${id}. Attempting to retry.`);
-                try {
-                  const toolResult = await handleFunctionCall(toolName, JSON.parse(tc.function.arguments || '{}'), userId, channelId);
-                  const toolMessage = {
-                    role: 'tool',
-                    name: toolName,
-                    tool_call_id: id,
-                    content: JSON.stringify(toolResult),
-                  };
-                  msgs.splice(i + 1, 0, toolMessage);
-                  console.log(`[GEMINI] Successfully retried tool execution for tool_call_id=${id}`);
-                } catch (retryError) {
-                  console.error(`[GEMINI] Retry failed for tool_call_id=${id}:`, retryError.message);
-                  const placeholder = { role: 'tool', tool_call_id: id, name: 'auto', content: JSON.stringify({ error: 'Tool response missing; auto-inserted placeholder' }) };
-                  msgs.splice(i + 1, 0, placeholder);
-                  console.warn(`[GEMINI] Inserted placeholder tool response for tool_call_id=${id}`);
-                }
-                i++; // Skip over the inserted response
+          if (!m || !m.tool_calls || !Array.isArray(m.tool_calls) || m.tool_calls.length === 0) continue;
+
+          // First pass: if ALL missing are run_job_now, strip them and skip to next message
+          let anyRunJobNowDropped = false;
+          const stillNeeded = [];
+          for (const tc of m.tool_calls) {
+            const id = tc.id;
+            let found = false;
+            for (let j = i + 1; j < msgs.length; j++) {
+              const later = msgs[j];
+              if (later && later.role === 'tool' && later.tool_call_id === id) {
+                found = true;
+                break;
               }
             }
+            if (!found && (tc.function?.name === 'run_job_now')) {
+              anyRunJobNowDropped = true;
+              continue;
+            }
+            if (!found) stillNeeded.push(tc);
           }
+          if (anyRunJobNowDropped && stillNeeded.length === 0) {
+            m.tool_calls = m.tool_calls.filter(tc => {
+              let found = false;
+              for (let j = i + 1; j < msgs.length; j++) {
+                if (msgs[j]?.role === 'tool' && msgs[j].tool_call_id === tc.id) { found = true; break; }
+              }
+              return found;
+            });
+            if (m.tool_calls.length === 0) delete m.tool_calls;
+            console.warn(`[GEMINI] Removed run_job_now tool_call(s) from assistant message (no response).`);
+            continue;
+          }
+
+          // Second pass: for missing non–run_job_now, retry or insert placeholder; insert in order (same as tool_calls)
+          let insertOffset = 0;
+          for (const tc of m.tool_calls) {
+            const id = tc.id;
+            let found = false;
+            for (let j = i + 1 + insertOffset; j < msgs.length; j++) {
+              const later = msgs[j];
+              if (later && later.role === 'tool' && later.tool_call_id === id) {
+                found = true;
+                break;
+              }
+            }
+            if (found) continue;
+
+            const toolName = tc.function?.name || 'unknown';
+            if (toolName === 'run_job_now') {
+              m.tool_calls = m.tool_calls.filter(t => t.id !== id);
+              if (m.tool_calls.length === 0) delete m.tool_calls;
+              console.warn(`[GEMINI] Removed run_job_now tool_call (id=${id}) from assistant message.`);
+              continue;
+            }
+
+            console.warn(`[GEMINI] Missing tool response for tool_call_id=${id}. Attempting to retry.`);
+            let toolMessage;
+            try {
+              const toolResult = await handleFunctionCall(toolName, JSON.parse(tc.function.arguments || '{}'), userId, channelId);
+              toolMessage = { role: 'tool', name: toolName, tool_call_id: id, content: JSON.stringify(toolResult) };
+              console.log(`[GEMINI] Successfully retried tool execution for tool_call_id=${id}`);
+            } catch (retryError) {
+              console.error(`[GEMINI] Retry failed for tool_call_id=${id}:`, retryError.message);
+              toolMessage = { role: 'tool', tool_call_id: id, name: 'auto', content: JSON.stringify({ error: 'Tool response missing; auto-inserted placeholder' }) };
+            }
+            msgs.splice(i + 1 + insertOffset, 0, toolMessage);
+            insertOffset++;
+          }
+          i += insertOffset;
         }
       } catch (e) {
         console.error('[GEMINI] ensureToolResponses failed:', e?.message);
