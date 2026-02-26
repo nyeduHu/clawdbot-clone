@@ -158,11 +158,20 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
     function cleanupMissingToolCalls(msgs) {
       const missing = findMissingToolCalls(msgs);
       if (missing.size === 0) return false;
-      for (const [idx, ids] of missing.entries()) {
+      // Process in descending index order so splice doesn't invalidate other indices
+      const entries = Array.from(missing.entries()).sort((a, b) => b[0] - a[0]);
+      for (const [idx, ids] of entries) {
         const m = msgs[idx];
         if (!m) continue;
+        const idSet = new Set(ids);
         delete m.tool_calls;
         console.warn(`[GEMINI] removed ${ids.length} missing tool_calls from assistant message at index ${idx}`);
+        // Remove orphan tool responses: API requires every 'tool' message to follow an assistant with tool_calls.
+        // Otherwise we get: "messages with role 'tool' must be a response to a preceding message with 'tool_calls'"
+        let j = idx + 1;
+        while (j < msgs.length && msgs[j] && msgs[j].role === 'tool' && idSet.has(msgs[j].tool_call_id)) {
+          msgs.splice(j, 1);
+        }
       }
       return true;
     }
