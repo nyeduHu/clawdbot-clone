@@ -62,7 +62,7 @@ function parseCronField(field, min, max) {
  * - exact numbers
  * - ranges (a-b)
  * - lists (a,b,c)
- * - steps (*/n, a-b/n)
+ * - step values like "*/n" or "a-b/n"
  */
 function cronMatchesNow(cronExpression, date) {
   const parts = cronExpression.trim().split(/\s+/);
