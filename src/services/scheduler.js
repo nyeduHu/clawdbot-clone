@@ -8,14 +8,85 @@ const {
 const { splitMessage } = require('../utils/messageSplitter');
 const { getMessages } = require('./conversation');
 
-/** @type {Map<number, import('node-cron').ScheduledTask>} */
-const activeJobs = new Map();
-
 /** @type {Map<number, object>} */
 const taskStore = new Map();
 
 /** @type {import('discord.js').Client | null} */
 let discordClient = null;
+
+/** @type {import('node-cron').ScheduledTask | null} */
+let pollingJob = null;
+
+/** @type {Map<number, string>} taskId -> last-run minute key (YYYY-MM-DDTHH:MM) */
+const lastRunKeyByTask = new Map();
+
+function getMinuteKey(date) {
+  return date.toISOString().slice(0, 16);
+}
+
+function parseCronField(field, min, max) {
+  const values = new Set();
+  const parts = field.split(',');
+
+  for (const part of parts) {
+    const [rangePart, stepPart] = part.split('/');
+    const step = stepPart ? parseInt(stepPart, 10) || 1 : 1;
+
+    if (rangePart === '*') {
+      for (let v = min; v <= max; v += step) values.add(v);
+      continue;
+    }
+
+    if (rangePart.includes('-')) {
+      const [startStr, endStr] = rangePart.split('-');
+      let start = parseInt(startStr, 10);
+      let end = parseInt(endStr, 10);
+      if (Number.isNaN(start) || Number.isNaN(end)) continue;
+      if (start < min) start = min;
+      if (end > max) end = max;
+      for (let v = start; v <= end; v += step) values.add(v);
+    } else {
+      let v = parseInt(rangePart, 10);
+      if (!Number.isNaN(v) && v >= min && v <= max) {
+        values.add(v);
+      }
+    }
+  }
+
+  return values;
+}
+
+/**
+ * Minimal cron matcher (5 fields: m h dom mon dow) with support for:
+ * - '*'
+ * - exact numbers
+ * - ranges (a-b)
+ * - lists (a,b,c)
+ * - steps (*/n, a-b/n)
+ */
+function cronMatchesNow(cronExpression, date) {
+  const parts = cronExpression.trim().split(/\s+/);
+  if (parts.length !== 5) return false;
+
+  const [minField, hourField, domField, monField, dowField] = parts;
+
+  const minute = date.getMinutes();
+  const hour = date.getHours();
+  const dom = date.getDate();
+  const mon = date.getMonth() + 1; // JS months 0-11
+  let dow = date.getDay(); // 0-6 (Sun-Sat)
+  // In cron, both 0 and 7 can represent Sunday. We'll allow 0 and 7 in expressions.
+
+  const mins = parseCronField(minField, 0, 59);
+  const hours = parseCronField(hourField, 0, 23);
+  const doms = parseCronField(domField, 1, 31);
+  const mons = parseCronField(monField, 1, 12);
+  const dows = parseCronField(dowField, 0, 7);
+
+  const dowMatch = dows.has(dow) || (dow === 0 && dows.has(7));
+
+  return mins.has(minute) && hours.has(hour) && doms.has(dom) && mons.has(mon) && dowMatch;
+}
 
 /**
  * Set the Discord client reference (called from index.js to avoid circular deps).
@@ -27,7 +98,7 @@ function setClient(client) {
 }
 
 /**
- * Start a single cron job for a task row.
+ * Register a task in memory so it can be triggered manually or by the polling loop.
  */
 function startJob(task) {
   console.log(`[SCHEDULER] startJob called for task #${task.id}, cron="${task.cron_expression}", channel=${task.channel_id}, user=${task.user_id}`);
@@ -39,18 +110,11 @@ function startJob(task) {
   }
   console.log(`[SCHEDULER] ✅ Cron expression valid: "${task.cron_expression}"`);
 
-  // Store the task object so it can be triggered manually later
+  // Store the task object so it can be triggered manually or by the polling loop
   taskStore.set(task.id, task);
-
-  const job = cron.schedule(task.cron_expression, async () => {
-    await performTask(task);
-  });
-
-  activeJobs.set(task.id, job);
-  console.log(`[SCHEDULER] ✅ Cron job registered and ACTIVE for task #${task.id}`);
+  console.log(`[SCHEDULER] ✅ Task registered in memory for polling scheduler (no per-task cron job).`);
   console.log(`[SCHEDULER]   Expression: "${task.cron_expression}"`);
   console.log(`[SCHEDULER]   Description: "${task.task_description.slice(0, 100)}"`);
-  console.log(`[SCHEDULER]   Active jobs count: ${activeJobs.size}`);
 }
 
 /**
@@ -120,6 +184,32 @@ async function performTask(task) {
 }
 
 /**
+ * Polling tick: runs every minute and checks which tasks should fire.
+ */
+async function pollingTick() {
+  const now = new Date();
+  const minuteKey = getMinuteKey(now);
+  try {
+    const tasks = await getAllScheduledTasks();
+    for (const task of tasks) {
+      if (!task.cron_expression) continue;
+      if (!cronMatchesNow(task.cron_expression, now)) continue;
+
+      const lastKey = lastRunKeyByTask.get(task.id);
+      if (lastKey === minuteKey) continue; // already ran this minute
+
+      lastRunKeyByTask.set(task.id, minuteKey);
+      const stored = taskStore.get(task.id) || task;
+      if (!taskStore.has(task.id)) taskStore.set(task.id, task);
+      console.log(`[SCHEDULER] 🔄 pollingTick firing task #${task.id} at ${now.toISOString()}`);
+      await performTask(stored);
+    }
+  } catch (e) {
+    console.error('[SCHEDULER] pollingTick error:', e?.message || e);
+  }
+}
+
+/**
  * Retrieve messages for a specific task ID.
  * @param {number} taskId - The ID of the task.
  * @returns {Promise<Array>} - A promise that resolves to an array of messages.
@@ -146,7 +236,11 @@ async function init() {
   for (const task of tasks) {
     startJob(task);
   }
-  console.log(`[SCHEDULER] ✅ Scheduler init complete — ${activeJobs.size} active cron job(s)`);
+  if (!pollingJob) {
+    pollingJob = cron.schedule('* * * * *', pollingTick);
+    console.log('[SCHEDULER] ✅ Polling scheduler started (runs every minute).');
+  }
+  console.log(`[SCHEDULER] ✅ Scheduler init complete — ${tasks.length} task(s) registered for polling`);
 }
 
 /**
@@ -208,15 +302,9 @@ async function cancelTask(userId, taskId) {
     return { success: false, error: `Task #${taskId} not found or you don't own it.` };
   }
 
-  const job = activeJobs.get(taskId);
-  console.log(`[SCHEDULER] Active job for #${taskId}: ${!!job}`);
-  if (job) {
-    job.stop();
-    activeJobs.delete(taskId);
-    console.log(`[SCHEDULER] ✅ Cron job #${taskId} stopped and removed`);
-  }
-
-  console.log(`[SCHEDULER] ✅ Task #${taskId} cancelled — active jobs remaining: ${activeJobs.size}`);
+  taskStore.delete(taskId);
+  lastRunKeyByTask.delete(taskId);
+  console.log(`[SCHEDULER] ✅ Task #${taskId} cancelled.`);
   return { success: true, message: `Task #${taskId} cancelled.` };
 }
 
