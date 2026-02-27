@@ -14,7 +14,7 @@ const taskStore = new Map();
 /** @type {import('discord.js').Client | null} */
 let discordClient = null;
 
-/** @type {import('node-cron').ScheduledTask | null} */
+/** @type {NodeJS.Timeout | null} */
 let pollingJob = null;
 
 /** @type {Map<number, string>} taskId -> last-run minute key (YYYY-MM-DDTHH:MM) */
@@ -250,8 +250,16 @@ async function init() {
     startJob(task);
   }
   if (!pollingJob) {
-    pollingJob = cron.schedule('* * * * *', pollingTick);
-    console.log('[SCHEDULER] ✅ Polling scheduler started (runs every minute).');
+    // Run once immediately, then every 60 seconds
+    console.log('[SCHEDULER] ✅ Starting polling scheduler with setInterval (every 60s).');
+    pollingTick().catch(err => {
+      console.error('[SCHEDULER] initial pollingTick error:', err?.message || err);
+    });
+    pollingJob = setInterval(() => {
+      pollingTick().catch(err => {
+        console.error('[SCHEDULER] pollingTick error in interval:', err?.message || err);
+      });
+    }, 60_000);
   }
   console.log(`[SCHEDULER] ✅ Scheduler init complete — ${tasks.length} task(s) registered for polling`);
 }
