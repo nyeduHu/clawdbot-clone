@@ -1,4 +1,3 @@
-const cron = require('node-cron');
 const {
   getAllScheduledTasks,
   addScheduledTask,
@@ -23,6 +22,9 @@ const lastRunKeyByTask = new Map();
 function getMinuteKey(date) {
   return date.toISOString().slice(0, 16);
 }
+
+/** Last minute key we have already scanned up to (YYYY-MM-DDTHH:MM) */
+let lastPollMinuteKey = null;
 
 function parseCronField(field, min, max) {
   const values = new Set();
@@ -54,6 +56,20 @@ function parseCronField(field, min, max) {
   }
 
   return values;
+}
+
+function isCronExpressionValid(expr) {
+  if (!expr || typeof expr !== 'string') return false;
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length !== 5) return false;
+  const [minField, hourField, domField, monField, dowField] = parts;
+  // Ensure fields can be parsed; parseCronField already range-checks.
+  parseCronField(minField, 0, 59);
+  parseCronField(hourField, 0, 23);
+  parseCronField(domField, 1, 31);
+  parseCronField(monField, 1, 12);
+  parseCronField(dowField, 0, 7);
+  return true;
 }
 
 /**
@@ -104,7 +120,7 @@ function startJob(task) {
   console.log(`[SCHEDULER] startJob called for task #${task.id}, cron="${task.cron_expression}", channel=${task.channel_id}, user=${task.user_id}`);
   console.log(`[SCHEDULER] startJob task description: "${task.task_description}"`);
   
-  if (!cron.validate(task.cron_expression)) {
+  if (!isCronExpressionValid(task.cron_expression)) {
     console.error(`[SCHEDULER] ❌ CRON VALIDATION FAILED for task #${task.id}: "${task.cron_expression}"`);
     return;
   }
@@ -184,39 +200,64 @@ async function performTask(task) {
 }
 
 /**
- * Polling tick: runs every minute and checks which tasks should fire.
+ * Polling tick: runs periodically and checks which tasks should fire.
+ * If the process was paused or delayed, we \"catch up\" over all missed whole minutes
+ * between the last poll and now, so a task scheduled for 13:00 still runs even if
+ * the first tick after that is at 13:05.
  */
 async function pollingTick() {
-  const now = new Date();
-  const minuteKey = getMinuteKey(now);
   try {
-    const tasks = await getAllScheduledTasks();
-    console.log(`[SCHEDULER] pollingTick at ${now.toISOString()} — checking ${tasks.length} task(s)`);
-    for (const task of tasks) {
-      if (!task.cron_expression) {
-        console.log(`[SCHEDULER]   Task #${task.id} has no cron_expression, skipping`);
-        continue;
-      }
-      console.log(`[SCHEDULER]   Checking task #${task.id} (cron="${task.cron_expression}") for this minute...`);
-      const matches = cronMatchesNow(task.cron_expression, now);
-      if (!matches) {
-        console.log(`[SCHEDULER]   → Not scheduled for this minute.`);
-        continue;
-      }
+    const now = new Date();
+    const nowMinute = new Date(now);
+    nowMinute.setSeconds(0, 0);
+    const nowKey = getMinuteKey(nowMinute);
 
-      const lastKey = lastRunKeyByTask.get(task.id);
-      if (lastKey === minuteKey) {
-        console.log(`[SCHEDULER]   → Already ran this minute (lastRunKey=${lastKey}), skipping.`);
-        continue;
-      }
-
-      console.log(`[SCHEDULER]   → Should run now. Previous lastRunKey=${lastKey || 'none'}.`);
-      lastRunKeyByTask.set(task.id, minuteKey);
-      const stored = taskStore.get(task.id) || task;
-      if (!taskStore.has(task.id)) taskStore.set(task.id, task);
-      console.log(`[SCHEDULER] 🔄 pollingTick firing task #${task.id} at ${now.toISOString()}`);
-      await performTask(stored);
+    let startMinute;
+    if (lastPollMinuteKey) {
+      // Start one minute after the last polled minute
+      startMinute = new Date(lastPollMinuteKey + ':00.000Z');
+      // If parse failed, fall back to current minute
+      if (isNaN(startMinute.getTime())) startMinute = new Date(nowMinute.getTime());
+      else startMinute = new Date(startMinute.getTime() + 60_000);
+    } else {
+      // First run: just check the current minute
+      startMinute = new Date(nowMinute.getTime());
     }
+
+    const tasks = await getAllScheduledTasks();
+    console.log(`[SCHEDULER] pollingTick at ${now.toISOString()} — checking ${tasks.length} task(s) from minute ${getMinuteKey(startMinute)} to ${nowKey}`);
+
+    // Loop over each whole minute between startMinute and nowMinute (inclusive)
+    for (let t = new Date(startMinute.getTime()); t.getTime() <= nowMinute.getTime(); t = new Date(t.getTime() + 60_000)) {
+      const minuteKey = getMinuteKey(t);
+      for (const task of tasks) {
+        if (!task.cron_expression) {
+          console.log(`[SCHEDULER]   [${minuteKey}] Task #${task.id} has no cron_expression, skipping`);
+          continue;
+        }
+        console.log(`[SCHEDULER]   [${minuteKey}] Checking task #${task.id} (cron="${task.cron_expression}")...`);
+
+        const matches = cronMatchesNow(task.cron_expression, t);
+        if (!matches) {
+          console.log(`[SCHEDULER]   [${minuteKey}] → Not scheduled for this minute.`);
+          continue;
+        }
+
+        const lastKey = lastRunKeyByTask.get(task.id);
+        if (lastKey && lastKey >= minuteKey) {
+          console.log(`[SCHEDULER]   [${minuteKey}] → Already ran at ${lastKey}, skipping.`);
+          continue;
+        }
+
+        console.log(`[SCHEDULER]   [${minuteKey}] → Should run now. Previous lastRunKey=${lastKey || 'none'}.`);
+        lastRunKeyByTask.set(task.id, minuteKey);
+        const stored = taskStore.get(task.id) || task;
+        if (!taskStore.has(task.id)) taskStore.set(task.id, task);
+        console.log(`[SCHEDULER] 🔄 pollingTick firing task #${task.id} for minute ${minuteKey}`);
+        await performTask(stored);
+      }
+    }
+    lastPollMinuteKey = nowKey;
   } catch (e) {
     console.error('[SCHEDULER] pollingTick error:', e?.message || e);
   }
@@ -279,7 +320,7 @@ async function scheduleTask(userId, channelId, cronExpression, description) {
   console.log(`[SCHEDULER]   cronExpression="${cronExpression}"`);
   console.log(`[SCHEDULER]   description="${description}"`);
   
-  if (!cron.validate(cronExpression)) {
+  if (!isCronExpressionValid(cronExpression)) {
     console.log(`[SCHEDULER] ❌ Cron validation FAILED for "${cronExpression}"`);
     return { error: `Invalid cron expression: "${cronExpression}". Use standard 5-field cron (minute hour day month weekday). Examples: "0 2 * * *" = 2 AM daily, "0 9 * * 1" = 9 AM every Monday.` };
   }
