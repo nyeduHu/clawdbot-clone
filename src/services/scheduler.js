@@ -191,13 +191,26 @@ async function pollingTick() {
   const minuteKey = getMinuteKey(now);
   try {
     const tasks = await getAllScheduledTasks();
+    console.log(`[SCHEDULER] pollingTick at ${now.toISOString()} — checking ${tasks.length} task(s)`);
     for (const task of tasks) {
-      if (!task.cron_expression) continue;
-      if (!cronMatchesNow(task.cron_expression, now)) continue;
+      if (!task.cron_expression) {
+        console.log(`[SCHEDULER]   Task #${task.id} has no cron_expression, skipping`);
+        continue;
+      }
+      console.log(`[SCHEDULER]   Checking task #${task.id} (cron="${task.cron_expression}") for this minute...`);
+      const matches = cronMatchesNow(task.cron_expression, now);
+      if (!matches) {
+        console.log(`[SCHEDULER]   → Not scheduled for this minute.`);
+        continue;
+      }
 
       const lastKey = lastRunKeyByTask.get(task.id);
-      if (lastKey === minuteKey) continue; // already ran this minute
+      if (lastKey === minuteKey) {
+        console.log(`[SCHEDULER]   → Already ran this minute (lastRunKey=${lastKey}), skipping.`);
+        continue;
+      }
 
+      console.log(`[SCHEDULER]   → Should run now. Previous lastRunKey=${lastKey || 'none'}.`);
       lastRunKeyByTask.set(task.id, minuteKey);
       const stored = taskStore.get(task.id) || task;
       if (!taskStore.has(task.id)) taskStore.set(task.id, task);
