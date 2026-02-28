@@ -127,8 +127,8 @@ function startJob(task) {
   console.log(`[SCHEDULER] ✅ Cron expression valid: "${task.cron_expression}"`);
 
   // Store the task object so it can be triggered manually or by the polling loop
-  taskStore.set(task.id, task);
-  console.log(`[SCHEDULER] ✅ Task registered in memory for polling scheduler (no per-task cron job).`);
+  // Do not persist tasks in memory — scheduler will read tasks from the DB on each tick.
+  console.log(`[SCHEDULER] ✅ Task registered for polling (no in-memory persistence).`);
   console.log(`[SCHEDULER]   Expression: "${task.cron_expression}"`);
   console.log(`[SCHEDULER]   Description: "${task.task_description.slice(0, 100)}"`);
 }
@@ -234,10 +234,8 @@ async function pollingTick() {
 
         console.log(`[SCHEDULER]   [${minuteKey}] → Should run now. Previous lastRunKey=${lastKey || 'none'}.`);
         lastRunKeyByTask.set(task.id, minuteKey);
-        const stored = taskStore.get(task.id) || task;
-        if (!taskStore.has(task.id)) taskStore.set(task.id, task);
         console.log(`[SCHEDULER] 🔄 pollingTick firing task #${task.id} for minute ${minuteKey}`);
-        await performTask(stored);
+        await performTask(task);
       }
     }
     lastPollMinuteKey = nowKey;
@@ -358,17 +356,11 @@ module.exports = { setClient, init, scheduleTask, listTasks, cancelTask };
 // Also export a runNow helper for debugging (calls the task handler immediately)
 module.exports.runNow = async function runNow(taskId, callerUserId) {
   console.log(`[SCHEDULER] runNow() called for taskId=${taskId} by user=${callerUserId}`);
-  const task = taskStore.get(Number(taskId));
-  if (!task) {
-    console.log(`[SCHEDULER] runNow: task ${taskId} not in memory; loading from DB`);
-    const tasks = await getAllScheduledTasks();
-    const found = tasks.find(t => t.id === Number(taskId));
-    if (!found) return { error: 'Task not found' };
-    taskStore.set(found.id, found);
-    await performTask(found);
-    return { success: true };
-  }
-  await performTask(task);
+  // Always load the task from the DB to avoid relying on in-memory state
+  const tasks = await getAllScheduledTasks();
+  const found = tasks.find(t => t.id === Number(taskId));
+  if (!found) return { error: 'Task not found' };
+  await performTask(found);
   return { success: true };
 };
 
