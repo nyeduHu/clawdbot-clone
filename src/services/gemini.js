@@ -53,6 +53,9 @@ async function processMessage(userId, text, imageParts = [], channelId = null, o
   console.log(`[GEMINI] processMessage() called: userId=${userId}, channelId=${channelId}, textLen=${text?.length}, images=${imageParts.length}, skipHistory=${skipHistory}`);
   const systemInstruction = await getSystemInstruction(userId);
   const tools = buildTools();
+  const safeTools = Array.isArray(tools)
+    ? tools.map(t => ({ name: t.name, description: t.description || null, parameters: t.parameters || null }))
+    : null;
 
   // Build the user message content
   const dateContext = `[Current date/time: ${new Date().toISOString()}]\n\n`;
@@ -87,18 +90,34 @@ async function processMessage(userId, text, imageParts = [], channelId = null, o
   stripInvalidToolCalls(messages);
 
   try {
+    console.log(`[GEMINI] processMessage prepared messages: count=${messages.length}, skipHistory=${skipHistory}`);
+    console.log(`[GEMINI] processMessage tools: ${Array.isArray(safeTools) ? safeTools.map(t=>t.name).join(',') : String(safeTools)}`);
+    persistMessages('processMessage_pre_api', { userId, channelId, skipHistory, tools: safeTools, messages });
+  } catch (e) {
+    console.error('[GEMINI] failed to log prepared messages:', e?.message);
+  }
 
+  try {
+
+    console.log('[GEMINI] sending request to OpenAI chat.completions.create');
     let response = await getClient().chat.completions.create({
       model: AI_MODEL,
       messages,
       tools: tools || undefined,
     });
 
+    try {
+      persistMessages('processMessage_raw_response', { userId, channelId, response });
+    } catch (e) {
+      console.error('[GEMINI] failed to persist OpenAI response:', e?.message);
+    }
+
     let assistantMessage = response.choices[0].message;
 
     // Function calling loop
     let rounds = 0;
     while (assistantMessage.tool_calls && rounds < MAX_TOOL_ROUNDS) {
+      console.log(`[GEMINI] assistant issued tool_calls (round ${rounds + 1}) count=${assistantMessage.tool_calls.length}`);
       // Record assistant's tool call message
       await addMessage(userId, assistantMessage);
 
@@ -135,6 +154,11 @@ async function processMessage(userId, text, imageParts = [], channelId = null, o
         { role: 'system', content: systemInstruction },
         ...(await getMessages(userId)),
       ];
+      try {
+        persistMessages('processMessage_post_tool_call_messages', { userId, channelId, round: rounds + 1, updatedMessages });
+      } catch (e) {
+        console.error('[GEMINI] failed to persist post-tool-call messages:', e?.message);
+      }
       sanitizeMessages(updatedMessages);
       stripInvalidToolCalls(updatedMessages);
 
@@ -145,11 +169,18 @@ async function processMessage(userId, text, imageParts = [], channelId = null, o
       });
 
       assistantMessage = response.choices[0].message;
+      console.log(`[GEMINI] OpenAI returned assistant message (round ${rounds + 1}): contentLen=${String(assistantMessage?.content || '').length}, tool_calls=${assistantMessage?.tool_calls?.length || 0}`);
       rounds++;
     }
 
     // Extract final text
     const finalText = assistantMessage.content || '(No response generated)';
+    console.log(`[GEMINI] finalText length=${finalText.length}`);
+    try {
+      persistMessages('processMessage_final', { userId, channelId, finalText, assistantMessage });
+    } catch (e) {
+      console.error('[GEMINI] failed to persist final response:', e?.message);
+    }
 
     // Record assistant response in history
     await addMessage(userId, assistantMessage);
