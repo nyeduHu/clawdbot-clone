@@ -156,25 +156,6 @@ async function performTask(task) {
       return;
     }
 
-    // First attempt: if a generated tool `generate_voiceover_transcriptions` exists, call it directly
-    try {
-      const { handleFunctionCall, registry } = require('../tools/_registry');
-      if (registry.has('generate_voiceover_transcriptions')) {
-        console.log(`[SCHEDULER] Detected tool generate_voiceover_transcriptions — calling directly`);
-        const genRes = await handleFunctionCall('generate_voiceover_transcriptions', { prompt: null }, task.user_id, task.channel_id, true);
-        console.log(`[SCHEDULER] generate_voiceover_transcriptions returned: ${JSON.stringify(genRes).slice(0,300)}`);
-        if (genRes && Array.isArray(genRes.transcriptions) && genRes.transcriptions.length) {
-          for (const t of genRes.transcriptions) {
-            await channel.send(t);
-          }
-          console.log(`[SCHEDULER] ✅ Task #${task.id} sent ${genRes.transcriptions.length} generated transcription(s)`);
-          return;
-        }
-      }
-    } catch (err) {
-      console.log(`[SCHEDULER] generate_voiceover_transcriptions tool call failed or not available: ${err?.message}`);
-    }
-
     const { processMessage } = require('./gemini');
     console.log(`[SCHEDULER]   Sending scheduled prompt as user message (same as chat)...`);
 
