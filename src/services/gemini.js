@@ -81,10 +81,11 @@ async function processMessage(userId, text, imageParts = [], channelId = null, o
 
   // Build full messages array with system prompt. Optionally skip history to avoid including
   // prior assistant/tool messages that may reference scheduling tools (prevents recursion).
-  const messages = [
-    { role: 'system', content: systemInstruction },
-    ...(skipHistory ? [] : await getMessages(userId)),
-  ];
+  // If skipHistory is true (used for scheduled runs), still include the current user message
+  // so the model sees the prompt being executed.
+  const messages = skipHistory
+    ? [{ role: 'system', content: systemInstruction }, userMessage]
+    : [{ role: 'system', content: systemInstruction }, ...(await getMessages(userId))];
 
   sanitizeMessages(messages);
   stripInvalidToolCalls(messages);
