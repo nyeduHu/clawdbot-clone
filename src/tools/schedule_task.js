@@ -1,17 +1,17 @@
 module.exports = {
   name: 'schedule_task',
   description:
-    'Schedule a recurring task. The bot will automatically perform the described task at the specified times and post the result in the current channel. Use standard 5-field cron expressions (minute hour day month weekday). Examples: "0 2 * * *" = 2 AM daily, "0 9 * * 1" = 9 AM every Monday, "*/30 * * * *" = every 30 minutes, "0 14 * * 1-5" = 2 PM weekdays.',
+    'Schedule a recurring task. Only use when the user explicitly asks to schedule or repeat something (e.g. "schedule this", "run every day", "every minute"). Do NOT use for one-off requests—those should be done now with other tools. At each scheduled time the stored prompt is sent as if the user had just said it. Create only one task unless the user asks for multiple.',
   parameters: {
     type: 'object',
     properties: {
       cron_expression: {
         type: 'string',
-        description: 'Cron expression for when to run (e.g., "0 2 * * *" for 2 AM daily).',
+        description: 'When to run: 5-field cron (minute hour day month weekday). E.g. "0 6 * * *" = 6 AM daily, "*/1 * * * *" = every minute, "0 9 * * 1" = 9 AM Mondays.',
       },
       task_description: {
         type: 'string',
-        description: 'What the bot should do each time the task runs. Be specific and detailed.',
+        description: "The exact prompt to run at each time. Use the user's own words only (e.g. 'search the web and give me the weather for Budapest'). Do NOT expand into a long spec, action list, or instructions—store only what the user asked to run.",
       },
     },
     required: ['cron_expression', 'task_description'],
@@ -28,9 +28,33 @@ module.exports = {
       return { error: 'Cannot schedule a task without a channel context.' };
     }
 
+    // Extract a clean executable prompt from the provided task_description so we
+    // don't persist wrapper text like "please schedule the following" which
+    // would cause the scheduler to re-run scheduling instructions.
+    function extractPrompt(text) {
+      if (!text || typeof text !== 'string') return text;
+      // 1) If there's a triple-backtick codeblock, use its first occurrence
+      const codeblockMatch = text.match(/```(?:[\s\S]*?)```/);
+      if (codeblockMatch) {
+        return codeblockMatch[0].replace(/```/g, '').trim();
+      }
+
+      // 2) Remove leading polite scheduling phrases up to the first colon
+      const cleanedLeading = text.replace(/^[\s\S]{0,200}?\b(schedule|scheduled|please schedule|create a schedule|create scheduled)\b[\s\S]*?:/i, '').trim();
+      if (cleanedLeading && cleanedLeading.length < text.length) return cleanedLeading;
+
+      // 3) If the text has multiple paragraphs, assume the last paragraph is the executable prompt
+      const paragraphs = text.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+      if (paragraphs.length > 1) return paragraphs[paragraphs.length - 1];
+
+      // 4) Fallback: return the original trimmed text
+      return text.trim();
+    }
+
     const { scheduleTask } = require('../services/scheduler');
-    console.log(`[TOOL:schedule_task] Calling scheduleTask()...`);
-    const result = await scheduleTask(userId, channelId, params.cron_expression, params.task_description);
+    const cleanedDescription = extractPrompt(params.task_description);
+    console.log(`[TOOL:schedule_task] Calling scheduleTask() with cleanedDescription=${JSON.stringify(cleanedDescription).slice(0,300)}`);
+    const result = await scheduleTask(userId, channelId, params.cron_expression, cleanedDescription);
     console.log(`[TOOL:schedule_task] scheduleTask() returned:`, JSON.stringify(result));
 
     if (result.error) {
