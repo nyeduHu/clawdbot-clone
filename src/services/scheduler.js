@@ -180,7 +180,9 @@ async function performTask(task) {
 
     const prompt = task.task_description;
     console.log(`[SCHEDULER]   Prompt: "${prompt.slice(0, 120)}${prompt.length > 120 ? '...' : ''}"`);
-    const result = await processMessage(task.user_id, prompt, [], task.channel_id);
+    // Run the scheduled prompt without including user message history to avoid
+    // pulling in prior assistant/tool messages that may reference scheduling tools.
+    const result = await processMessage(task.user_id, prompt, [], task.channel_id, { skipHistory: true });
     console.log(`[SCHEDULER]   processMessage returned ${result ? result.length : 0} chars`);
 
     if (result && result.trim()) {

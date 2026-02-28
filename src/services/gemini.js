@@ -48,8 +48,9 @@ function persistMessages(name, obj) {
  * @param {string} [channelId=null] - Discord channel ID (for tools that need it)
  * @returns {Promise<string>} The final text response
  */
-async function processMessage(userId, text, imageParts = [], channelId = null) {
-  console.log(`[GEMINI] processMessage() called: userId=${userId}, channelId=${channelId}, textLen=${text?.length}, images=${imageParts.length}`);
+async function processMessage(userId, text, imageParts = [], channelId = null, options = {}) {
+  const skipHistory = !!options.skipHistory;
+  console.log(`[GEMINI] processMessage() called: userId=${userId}, channelId=${channelId}, textLen=${text?.length}, images=${imageParts.length}, skipHistory=${skipHistory}`);
   const systemInstruction = await getSystemInstruction(userId);
   const tools = buildTools();
 
@@ -75,10 +76,11 @@ async function processMessage(userId, text, imageParts = [], channelId = null) {
   };
   await addMessage(userId, userMessage);
 
-  // Build full messages array with system prompt
+  // Build full messages array with system prompt. Optionally skip history to avoid including
+  // prior assistant/tool messages that may reference scheduling tools (prevents recursion).
   const messages = [
     { role: 'system', content: systemInstruction },
-    ...(await getMessages(userId)),
+    ...(skipHistory ? [] : await getMessages(userId)),
   ];
 
   sanitizeMessages(messages);
@@ -248,17 +250,16 @@ async function runScheduledTask(userId, channelId, taskDescription) {
 
 function sanitizeMessages(messages) {
   for (const msg of messages) {
-    if (msg.role === 'assistant' && (msg.content === null || msg.content === undefined)) {
-      console.warn(`[GEMINI] Replacing null content in assistant message with placeholder.`);
-      msg.content = '(No content provided)';
-    }
+    if (msg.role !== 'assistant') continue;
+    if (msg.content !== null && msg.content !== undefined) continue;
+    // API requires content to be a string; use empty string for tool-call-only assistant messages.
+    msg.content = '';
   }
 }
 
 /**
- * Make message list valid for the API: never send assistant + tool_calls without exact tool responses.
- * If an assistant has tool_calls but the next N messages aren't exactly the matching tool messages in order,
- * remove that assistant's tool_calls and remove all consecutive tool messages after it.
+ * Make message list valid for the API: never send assistant + tool_calls without exact tool responses,
+ * and never send orphan tool messages (tool without preceding assistant with matching tool_calls).
  */
 function stripInvalidToolCalls(msgs) {
   if (!Array.isArray(msgs)) return;
@@ -286,6 +287,15 @@ function stripInvalidToolCalls(msgs) {
       }
     }
     i++;
+  }
+  // Remove any remaining orphan tool messages (from end so indices stay valid)
+  for (let k = msgs.length - 1; k >= 0; k--) {
+    if (msgs[k]?.role !== 'tool') continue;
+    const prev = k > 0 ? msgs[k - 1] : null;
+    const tid = msgs[k].tool_call_id;
+    if (!prev || prev.role !== 'assistant' || !prev.tool_calls?.some(tc => tc.id === tid)) {
+      msgs.splice(k, 1);
+    }
   }
 }
 
