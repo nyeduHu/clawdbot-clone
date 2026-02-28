@@ -1,0 +1,11 @@
+{
+  "userId": "341116176128278528",
+  "channelId": "1477305847343218688",
+  "finalText": ":no_entry_sign: No scheduled tasks found.\n\nWant me to create one? For example, a daily TikTok script generator task could be added. If so, I can set it up like this:\n\n- cron_expression: 0 8-20 * * *\n- task_description: (paste the exact prompt you want to run, e.g. the On Creation/Validation/Dry-run spec you shared earlier)\n\nIf you confirm, also specify:\n- which channel to post to (current channel or a specific one)\n- whether to post only in certain hours or strictly once per day\n\nTell me the exact task_description text you want stored, and I’ll create it.",
+  "assistantMessage": {
+    "role": "assistant",
+    "content": ":no_entry_sign: No scheduled tasks found.\n\nWant me to create one? For example, a daily TikTok script generator task could be added. If so, I can set it up like this:\n\n- cron_expression: 0 8-20 * * *\n- task_description: (paste the exact prompt you want to run, e.g. the On Creation/Validation/Dry-run spec you shared earlier)\n\nIf you confirm, also specify:\n- which channel to post to (current channel or a specific one)\n- whether to post only in certain hours or strictly once per day\n\nTell me the exact task_description text you want stored, and I’ll create it.",
+    "refusal": null,
+    "annotations": []
+  }
+}
