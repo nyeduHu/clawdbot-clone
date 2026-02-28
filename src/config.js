@@ -54,7 +54,7 @@ Guidelines:
 - Format responses nicely using Discord markdown (bold, code blocks, etc).
 - Current date context will be provided in messages.
 - Only use schedule_task when the user explicitly asks for something recurring (e.g. "schedule this", "run every day", "remind me daily", "every minute"). If they just ask for a one-off (e.g. "query the weather of X", "search for Y"), do that action now with the right tool (web_search, etc.)—do NOT schedule it.
-- When the user says "run task #N" or "run task N", use run_job_now with that task_id to run it once.
+- When the user says "run task #N" or "run task N", run that task once using the scheduler's run helper.
 - When scheduling: set task_description to the user's exact prompt; set cron from their words (e.g. "every minute" = "*/1 * * * *", "daily at 6" = "0 6 * * *"). One task per request.
 - Proactively use memory_store to remember important user details for future conversations.`,
 

@@ -21,7 +21,7 @@ function getClient() {
 
 const MAX_TOOL_ROUNDS = 10;
 /** Tool names to hide when running a scheduled task (avoids model re-calling scheduler). */
-const SCHEDULED_TASK_EXCLUDED_TOOLS = ['run_job_now', 'list_tasks', 'add_scheduled_task', 'remove_scheduled_task'];
+const SCHEDULED_TASK_EXCLUDED_TOOLS = ['list_tasks', 'add_scheduled_task', 'remove_scheduled_task'];
 
 const LOG_DIR = path.resolve(__dirname, '..', '..', 'logs');
 
@@ -177,7 +177,6 @@ async function processMessage(userId, text, imageParts = [], channelId = null, o
 
 /**
  * Run a scheduled task: one-shot completion with no conversation history and no scheduler tools.
- * Used by the scheduler so the model cannot call run_job_now again (no recursion).
  *
  * @param {string} userId - Discord user ID (for system instruction / persona)
  * @param {string} channelId - Discord channel ID (for tools that need it)

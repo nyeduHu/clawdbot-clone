@@ -125,7 +125,7 @@ function loadAllTools() {
 /**
  * Convert the registry into OpenAI's tools format.
  * Only includes active (non-pending) tools.
- * @param {{ exclude?: string[] }} [opts] - Optional. exclude: tool names to omit (e.g. ['run_job_now'] for scheduled context).
+ * @param {{ exclude?: string[] }} [opts] - Optional. exclude: tool names to omit (e.g. ['schedule_task'] for scheduled context).
  * @returns {Array<{ type: 'function', function: { name, description, parameters } }> | undefined}
  */
 function buildTools(opts) {
